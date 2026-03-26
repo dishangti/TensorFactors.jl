@@ -1,5 +1,5 @@
 module TensorFactors
 
-# Write your package code here.
+    include("cp.jl")
 
 end

@@ -1,9 +1,15 @@
 name = "TensorFactors"
 uuid = "dbfff67a-e1b2-4b37-8c6f-9fb5ab74d5d7"
-authors = ["dishangti <16698219+dishangti@users.noreply.github.com> and contributors"]
 version = "1.0.0-DEV"
+authors = ["dishangti <16698219+dishangti@users.noreply.github.com> and contributors"]
+
+[deps]
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+LoopVectorization = "bdcacae8-1622-11e9-2a5c-532679323890"
 
 [compat]
+LinearAlgebra = "1.12.0"
+LoopVectorization = "0.12.173"
 julia = "1.10.10"
 
 [extras]
