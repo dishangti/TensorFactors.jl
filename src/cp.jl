@@ -1,5 +1,5 @@
 using LinearAlgebra
-using LoopVectorization
+using Tullio, LoopVectorization
 
 export cp_loss, cp_als
 
@@ -32,7 +32,7 @@ function cp_loss(
     X::AbstractArray{T, N}
 ) where {N, T <: Number}
     R = size(factors[1], 2)
-    norm2_X = norm(X)^2
+    norm2_X = sum(abs2, X)
 
     # ||X_recon||_F^2 = sum(*(A'A, B'B, C'C, ...))
     G = factors[1]' * factors[1]
@@ -79,36 +79,33 @@ function cp_loss(
 end
 
 """
-    compute_mttkrp!(
-        M::AbstractMatrix{T},
-        X::AbstractArray{T, N},
-        factors::NTuple{N, <:AbstractMatrix{T}},
-        ::Val{n}
-    ) where {T <: Number, N, n}
+    cp_loss(
+        Gts::NTuple{N, <:AbstractMatrix{T}},
+        A_n::AbstractMatrix{T},
+        mttkrp_n::AbstractMatrix{T},
+        X_norm2::T,
+    ) where {N, T <: Real}
 
-Computes the Matricized Tensor Times Khatri-Rao Product (MTTKRP) of an arbitrary-order
-tensor `X` along mode `n`, storing the result in the preallocated matrix `M`.
+Computes the squared CP reconstruction loss from precomputed Gram matrices and an
+MTTKRP term for one mode.
 
-This implementation avoids explicitly forming either the matricized tensor or the
-Khatri-Rao product. Instead, it evaluates each rank-`r` column independently through
-a sequence of tensor contractions using BLAS-backed matrix-vector multiplications.
-The computation proceeds by contracting modes `N, N-1, ..., n+1` first, then
-`1, 2, ..., n-1`, while keeping mode `n` uncontracted. This reduces intermediate
-memory usage, enables efficient in-place execution, and is suitable for high-performance
-tensor factorization workflows.
+This method is intended for use inside ALS iterations, where the Gram matrices of the
+factor matrices and the mode-`n` MTTKRP term have already been computed. Rather than
+re-evaluating the full loss from the factors and tensor directly, it uses the identity
+
+`||X - X̂||_F^2 = ||X||_F^2 - 2⟨A_n, MTTKRP_n⟩ + ||X̂||_F^2`
+
+where `||X̂||_F^2` is obtained from the Hadamard product of the Gram matrices. This
+provides a fast way to monitor convergence with minimal additional cost.
 
 # Arguments
-- `M`: Preallocated output matrix of size `(size(X, n), R)`, where `R` is the shared
-  column dimension of the factor matrices.
-- `X`: Input tensor of order `N`.
-- `factors`: Tuple of `N` factor matrices, where `factors[k]` has size
-  `(size(X, k), R)`.
-- `Val(n)`: Compile-time mode index specifying the mode along which the MTTKRP is
-  computed.
+- `Gts`: Tuple of `N` Gram matrices, where `Gts[k] = factors[k]' * factors[k]`.
+- `A_n`: Factor matrix for the mode used in the MTTKRP evaluation.
+- `mttkrp_n`: MTTKRP term corresponding to the same mode as `A_n`.
+- `X_norm2`: Squared Frobenius norm of the input tensor, i.e. `sum(abs2, X)`.
 
 # Returns
-- `M`: The updated output matrix containing the mode-`n` MTTKRP result, with size
-  `(size(X, n), R)`.
+- The squared Frobenius loss `||X - X̂||_F^2`.
 """
 @inline function cp_loss(
     Gts::NTuple{N, <:AbstractMatrix{T}},
@@ -127,6 +124,91 @@ tensor factorization workflows.
     norm2_recon = sum(Hardmard_prod)
 
     loss = X_norm2 - 2 * dot(mttkrp_n, A_n) + norm2_recon
+    return max(loss, zero(T))
+end
+
+"""
+    cp_loss(
+        A::AbstractMatrix{T},
+        B::AbstractMatrix{T},
+        C::AbstractMatrix{T},
+        X::AbstractArray{T, 3},
+    ) where {T <: Real}
+
+Computes the CP decomposition loss for a 3rd-order tensor `X` from factor matrices
+`A`, `B`, and `C` by explicitly forming the reconstruction.
+
+This method constructs the reconstructed tensor
+
+`X̂[i, j, k] = Σ_r A[i, r] B[j, r] C[k, r]`
+
+and then evaluates the squared Frobenius loss `||X - X̂||_F^2`. It is primarily useful
+as a straightforward reference implementation for 3-way tensors, and may also be
+convenient when the explicit reconstruction is acceptable in terms of memory and
+computational cost.
+
+# Arguments
+- `A`: First factor matrix of size `(size(X, 1), R)`.
+- `B`: Second factor matrix of size `(size(X, 2), R)`.
+- `C`: Third factor matrix of size `(size(X, 3), R)`.
+- `X`: Input 3rd-order tensor.
+
+# Returns
+- The squared Frobenius loss `||X - X̂||_F^2`.
+"""
+@inline function cp_loss(
+    A::AbstractMatrix{T},
+    B::AbstractMatrix{T},
+    C::AbstractMatrix{T},
+    X::AbstractArray{T, 3}
+) where {T <: Real}
+    @tullio recon[i, j, k] := A[i, r] * B[j, r] * C[k, r]
+    @tullio loss := (X[i, j, k] - recon[i, j, k])^2
+    return loss
+end
+
+"""
+    cp_loss(
+        Gt_A::AbstractMatrix{T},
+        Gt_B::AbstractMatrix{T},
+        Gt_C::AbstractMatrix{T},
+        C::AbstractMatrix{T},
+        mttkrp_C::AbstractMatrix{T},
+        X_norm2::T,
+    ) where {T <: Real}
+
+Computes the squared CP reconstruction loss for a 3rd-order tensor from precomputed
+Gram matrices and the MTTKRP term of the third mode.
+
+This method is a specialized 3-way variant of the Gram/MTTKRP-based loss evaluation
+used inside CP-ALS. It avoids explicit tensor reconstruction by using the identity
+
+`||X - X̂||_F^2 = ||X||_F^2 - 2⟨C, MTTKRP_C⟩ + ||X̂||_F^2`
+
+where the reconstruction norm `||X̂||_F^2` is computed as
+`sum(Gt_A .* Gt_B .* Gt_C)`. This makes the loss evaluation inexpensive during ALS
+iterations.
+
+# Arguments
+- `Gt_A`: Gram matrix `A' * A`.
+- `Gt_B`: Gram matrix `B' * B`.
+- `Gt_C`: Gram matrix `C' * C`.
+- `C`: Third-mode factor matrix.
+- `mttkrp_C`: MTTKRP term corresponding to the third mode.
+- `X_norm2`: Squared Frobenius norm of the input tensor, i.e. `sum(abs2, X)`.
+
+# Returns
+- The squared Frobenius loss `||X - X̂||_F^2`.
+"""
+@inline function cp_loss(
+    Gt_A::AbstractMatrix{T},
+    Gt_B::AbstractMatrix{T},
+    Gt_C::AbstractMatrix{T},
+    C::AbstractMatrix{T},
+    mttkrp_C::AbstractMatrix{T},
+    X_norm2::T
+) where {T <: Real}
+    loss = X_norm2 - 2 * dot(mttkrp_C, C) + sum(Gt_A .* Gt_B .* Gt_C)
     return max(loss, zero(T))
 end
 
@@ -160,7 +242,7 @@ CPU and GPU-compatible tensor factorization workflows.
 # Returns
 - `M`: The updated output matrix containing the mode-`n` MTTKRP result.
 """
-function compute_mttkrp!(
+function mttkrp!(
     M::AbstractMatrix{T},
     X::AbstractArray{T, N},
     factors::NTuple{N, <:AbstractMatrix{T}},
@@ -198,13 +280,17 @@ function compute_mttkrp!(
         end
     end
 
-    buf1 = Vector{T}(undef, max_tmp)
-    buf2 = Vector{T}(undef, max_tmp)
+    n_threads = Threads.maxthreadid()
+    thread_buf1 = [Vector{T}(undef, max_tmp) for _ in 1:n_threads]
+    thread_buf2 = [Vector{T}(undef, max_tmp) for _ in 1:n_threads]
 
-    @views for r in 1:R
+    BLAS_threads = BLAS.get_num_threads()
+    BLAS.set_num_threads(1) # Avoid oversubscription with multi-threaded BLAS
+    @inbounds @views @Threads.threads for r in 1:R
         src_is_X = true
-        src = buf1
-        dst = buf2
+        tid = Threads.threadid()
+        src = thread_buf1[tid]
+        dst = thread_buf2[tid]
         current_len = length(X)
 
         # Contract modes N, N-1, ..., n+1
@@ -264,6 +350,7 @@ function compute_mttkrp!(
             end
         end
     end
+    BLAS.set_num_threads(BLAS_threads) # Restore original BLAS thread count
 
     return M
 end
@@ -312,7 +399,7 @@ function cp_als(
     X::AbstractArray{T, N},
     cp_rank::Int;
     max_iter::Int=10000,
-    dloss_rtol::Float64=1e-6,
+    dloss_rtol::Float64=1e-8,
     loss_rtol::Float64=1e-8,
     show_trace::Bool=false,
     show_every::Int=100,
@@ -341,7 +428,7 @@ function cp_als(
 
     for iter in 1:max_iter
         for n in 1:N
-            # 1. Calculate the Hadamard product V of all Gram matrices except for mode n
+            # Calculate the Hadamard product V of all Gram matrices except for mode n
             first_idx = n == 1 ? 2 : 1
             copyto!(V, Gts[first_idx])
             for d in (first_idx+1):N
@@ -352,12 +439,12 @@ function cp_als(
             # Update the n-th factor matrix
             # Val(n) is used to force compile-time specialization of n, 
             # working in tandem with the generated function
-            compute_mttkrp!(mttkrp_buf[n], X, factors, Val(n))
+            mttkrp!(mttkrp_buf[n], X, factors, Val(n))
             
             copyto!(factors[n], mttkrp_buf[n])
             rdiv!(factors[n], cholesky!(Symmetric(V)))
             
-            # 3. Update the corresponding Gram matrix
+            # Update the corresponding Gram matrix
             mul!(Gts[n], factors[n]', factors[n])
         end
 
@@ -378,4 +465,117 @@ function cp_als(
 
     # Return a Tuple containing all factors instead of just A, B, C
     return factors
+end
+
+"""
+    cp_als(
+        tensor::AbstractArray{T, 3},
+        cpd_rank::Int;
+        max_iter::Int=10000,
+        dloss_rtol::Float64=1e-7,
+        loss_rtol::Float64=1e-8,
+        show_trace::Bool=false,
+        show_every::Int=100,
+    ) where {T <: Real}
+
+Computes a rank-`cpd_rank` CANDECOMP/PARAFAC (CP) decomposition of a 3rd-order
+tensor `tensor` using alternating least squares (ALS).
+
+This method is a specialized implementation for 3-way tensors. It iteratively updates
+the factor matrices `A`, `B`, and `C` by solving the normal equations for each mode
+while holding the other two factors fixed. The MTTKRP terms are formed directly using
+tensor contractions, and the Gram matrices of the factors are reused across iterations
+to avoid redundant computation. The relative reconstruction loss is monitored during
+optimization, and the iteration terminates when either the loss becomes sufficiently
+small or the change in loss between successive iterations falls below the specified
+tolerance.
+
+# Arguments
+- `tensor`: Input 3rd-order tensor of size `(I, J, K)`.
+- `cpd_rank`: Target CP rank.
+
+# Keyword Arguments
+- `max_iter`: Maximum number of ALS iterations.
+- `dloss_rtol`: Relative tolerance on the change in loss between successive iterations.
+  Iteration stops when `abs(last_loss - loss) < dloss_rtol`.
+- `loss_rtol`: Relative tolerance on the loss itself. Iteration stops when
+  `loss < loss_rtol`.
+- `show_trace`: If `true`, prints iteration progress and current loss.
+- `show_every`: Frequency, in iterations, at which progress information is printed
+  when `show_trace=true`.
+
+# Returns
+- `A`: Factor matrix of size `(size(tensor, 1), cpd_rank)`.
+- `B`: Factor matrix of size `(size(tensor, 2), cpd_rank)`.
+- `C`: Factor matrix of size `(size(tensor, 3), cpd_rank)`.
+"""
+function cp_als(
+    tensor::AbstractArray{T,3},
+    cpd_rank::Int;
+    max_iter::Int=10000,
+    dloss_rtol::Float64=1e-8,
+    loss_rtol::Float64=1e-8,
+    show_trace::Bool=false,
+    show_every::Int=100,
+) where {T<:Real}
+    I, J, K = size(tensor)
+
+    A = randn(T, I, cpd_rank)
+    B = randn(T, J, cpd_rank)
+    C = randn(T, K, cpd_rank)
+    mttkrp_C = Matrix{T}(undef, K, cpd_rank)
+    V = Matrix{T}(undef, cpd_rank, cpd_rank)    # For Hardamard product of Gram matrices
+
+    GtA = Matrix{T}(undef, cpd_rank, cpd_rank)
+    GtB = Matrix{T}(undef, cpd_rank, cpd_rank)
+    GtC = Matrix{T}(undef, cpd_rank, cpd_rank)
+
+    mul!(GtB, B', B)
+    mul!(GtC, C', C)
+    
+    norm_tensor = norm(tensor)
+    norm2_tensor = norm_tensor^2
+    last_loss = sqrt(cp_loss(A, B, C, tensor)) / norm_tensor
+
+    if show_trace
+        println("Iteration 0: Time = 0.0 s, Loss = $last_loss")
+    end
+    start_time = time()
+    for iter in 1:max_iter
+        # Update A
+        @tullio A[i, r] = tensor[i, j, k] * B[j, r] * C[k, r]
+        @. V = GtB * GtC
+        rdiv!(A, cholesky!(Symmetric(V)))  # Solve A * V_A = mttkrp_A
+        mul!(GtA, A', A)
+
+        # Update B
+        @tullio B[j, r] = tensor[i, j, k] * A[i, r] * C[k, r]
+        @. V = GtA * GtC
+        rdiv!(B, cholesky!(Symmetric(V)))
+        mul!(GtB, B', B)
+
+        # Update C
+        @tullio mttkrp_C[k, r] = tensor[i, j, k] * A[i, r] * B[j, r]
+        @. V = GtA * GtB
+        copyto!(C, mttkrp_C)
+        rdiv!(C, cholesky!(Symmetric(V)))
+        mul!(GtC, C', C)
+
+        # Evaluate loss
+        loss = sqrt(cp_loss(GtA, GtB, GtC, C, mttkrp_C, norm2_tensor)) / norm_tensor
+
+        if show_trace && iter % show_every == 0
+            println("Iteration $iter: Time = $(time() - start_time) s, Loss = $loss")
+        end
+
+        stop_criterion = (abs(last_loss - loss) < dloss_rtol
+                          || loss < loss_rtol)
+        if iter > 1 && stop_criterion
+            show_trace && println("Converged at iteration $iter, Loss = $loss")
+            break
+        end
+        last_loss = loss
+    end
+
+    return A, B, C
 end

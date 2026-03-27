@@ -6,10 +6,14 @@ authors = ["dishangti <16698219+dishangti@users.noreply.github.com> and contribu
 [deps]
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 LoopVectorization = "bdcacae8-1622-11e9-2a5c-532679323890"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+Tullio = "bc48ee85-29a4-5162-ae0b-a64e1601d4bc"
 
 [compat]
 LinearAlgebra = "1.12.0"
 LoopVectorization = "0.12.173"
+Random = "1.11.0"
+Tullio = "0.3.9"
 julia = "1.12.5"
 
 [extras]
