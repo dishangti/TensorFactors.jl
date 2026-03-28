@@ -1,8 +1,8 @@
 using TensorFactors
 using LinearAlgebra
-using LoopVectorization
-using Tullio
+using Tullio, LoopVectorization
 using Random
+using ForwardDiff
 using Test
 
 function test_cp()
@@ -17,6 +17,17 @@ function test_cp()
 
     @testset "cp.jl" begin
         Random.seed!(42)
+
+        # Test cp_als on the synthetic tensor with 4-tensor
+        I, J, K, L, R = 20, 30, 50, 60, 10
+        A, B, C, D = randn(I, R), randn(J, R), randn(K, R), randn(L, R)
+        X = zeros(I, J, K, L)
+        @tullio X[i, j, k, l] := A[i, r] * B[j, r] * C[k, r] * D[l, r]
+        A_hat, B_hat, C_hat, D_hat = cp_als(X, R)
+        loss_hat = sqrt(cp_loss((A_hat, B_hat, C_hat, D_hat), X)) / norm(X)
+        @test isfinite(loss_hat) && loss_hat < 1e-7
+
+        # Test cp_als on the synthetic tensor with 3-tensor
         I, J, K, R = 20, 30, 50, 10
         A, B, C = randn(I, R), randn(J, R), randn(K, R)
         @tullio X[i, j, k] := A[i, r] * B[j, r] * C[k, r]
@@ -45,14 +56,23 @@ function test_cp()
         loss_hat = sqrt(cp_loss((A_hat, B_hat, C_hat), X)) / norm(X)
         @test isfinite(loss_hat) && loss_hat < 1e-7
 
-        # Test cp_als on the synthetic tensor with more modes
-        I, J, K, L, R = 20, 30, 50, 60, 10
-        A, B, C, D = randn(I, R), randn(J, R), randn(K, R), randn(L, R)
-        X = zeros(I, J, K, L)
-        @tullio X[i, j, k, l] := A[i, r] * B[j, r] * C[k, r] * D[l, r]
-        A_hat, B_hat, C_hat, D_hat = cp_als(X, R)
-        loss_hat = sqrt(cp_loss((A_hat, B_hat, C_hat, D_hat), X)) / norm(X)
-        @test isfinite(loss_hat) && loss_hat < 1e-7
+        # Test conversion between flat parameter vector and CP factors
+        p = TensorFactors.cp_factors_to_flat((A, B, C))
+        A_hat, B_hat, C_hat = TensorFactors.flat_to_cp_factors(p, R, size(X))
+        @test (norm(A - A_hat) / norm(A) < 1e-14 || norm(B - B_hat) / norm(B) < 1e-14
+            || norm(C - C_hat) / norm(C) < 1e-14)
+
+        # Test flat loss
+        loss = cp_loss(p, R, X)
+        @test isfinite(loss) && loss < 1e-7
+
+        # Test flat gradient
+        p = randn(length(p))
+        g = similar(p)
+        TensorFactors.cp_loss_grad!(g, p, R, X)
+        g_fd = similar(p)
+        ForwardDiff.gradient!(g_fd, p -> cp_loss(p, R, X), p)
+        @test norm(g - g_fd) / norm(g_fd) < 1e-6
     end
 end
 

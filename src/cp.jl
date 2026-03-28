@@ -6,7 +6,95 @@ export cp_loss, cp_als
 using LinearAlgebra
 
 """
-    cp_loss(factors::NTuple{N, AbstractMatrix{T}}, X::AbstractArray{T, N}) where {N, T <: Real}
+    flat_to_cp_factors(
+        p::AbstractVector{T},
+        cp_rank::Int,
+        row_sizes::NTuple{N, Int},
+    ) where {T <: Real, N}
+
+Reshapes a flat parameter vector `p` into a tuple of CP factor matrices.
+
+This function interprets `p` as the concatenation of `N` factor matrices stored in
+column-major order, where the `n`-th factor has size `(row_sizes[n], cp_rank)`.
+It returns a tuple whose entries are views into the original vector reshaped as
+matrices, so no data is copied during the transformation.
+
+This is useful when CP factors are stored or optimized in flattened form, for example
+in gradient-based optimization routines or parameter packing/unpacking utilities.
+
+# Arguments
+- `p`: Flat parameter vector containing all factor entries.
+- `cp_rank`: Common column dimension of each factor matrix, i.e. the CP rank.
+- `row_sizes`: Tuple specifying the number of rows in each factor matrix.
+
+# Returns
+- `cp_factors`: A tuple of `N` factor matrices, where `cp_factors[n]` has size
+  `(row_sizes[n], cp_rank)`.
+"""
+@inline function flat_to_cp_factors(
+    p::AbstractVector{T},
+    cp_rank::Int,
+    row_sizes::NTuple{N, Int}
+) where {T <: Number, N}
+    @assert length(p) == cp_rank * sum(row_sizes) "Length of p must match total number of entries in the factor matrices."
+
+    idx = 1
+    @inbounds cp_factors = ntuple(N) do n
+        row = row_sizes[n]
+        len = row * cp_rank
+        factor = reshape(@view(p[idx:idx + len - 1]), row, cp_rank)
+        idx += len
+        factor
+    end
+
+    return cp_factors
+end
+
+"""
+    cp_factors_to_flat(
+        cp_factors::NTuple{N, <:AbstractMatrix{T}},
+    ) where {T <: Real, N}
+
+Flattens a tuple of CP factor matrices into a single parameter vector.
+
+This function packs the factor matrices in `cp_factors` into one contiguous vector by
+concatenating the entries of each matrix in column-major order. The factors are stored
+sequentially in the same order as they appear in the input tuple, making this function
+the inverse of [`flat_to_cp_factors`](@ref) when the same `cp_rank` and row sizes are
+used.
+
+This is useful when CP factors need to be represented in flattened form, for example
+for gradient-based optimization, parameter serialization, or interoperability with
+generic vector-based numerical routines.
+
+# Arguments
+- `cp_factors`: Tuple of `N` factor matrices, where all factors have the same number
+  of columns equal to the CP rank.
+
+# Returns
+- `p`: A flat vector containing all factor entries in column-major order.
+"""
+@inline function cp_factors_to_flat(
+    cp_factors::NTuple{N, <:AbstractMatrix{T}},
+) where {T <: Real, N}
+    cp_rank = size(cp_factors[1], 2)
+    @assert all(size(f, 2) == cp_rank for f in cp_factors) "All factor matrices must have the same number of columns."
+
+    total_len = sum(length, cp_factors)
+    p = Vector{T}(undef, total_len)
+
+    idx = 1
+    @inbounds for factor in cp_factors
+        len = length(factor)
+        copyto!(p, idx, vec(factor), 1, len)
+        idx += len
+    end
+
+    return p
+end
+
+"""
+    cp_loss(factors::NTuple{N, AbstractMatrix{T}}, X::AbstractArray{T, N}) where {N, T <: Number}
 
 Computes the CP decomposition loss for an arbitrary-order tensor `X` from its factor
 matrices `factors` using pure BLAS operations.
@@ -84,7 +172,7 @@ end
         A_n::AbstractMatrix{T},
         mttkrp_n::AbstractMatrix{T},
         X_norm2::T,
-    ) where {N, T <: Real}
+    ) where {N, T <: Number}
 
 Computes the squared CP reconstruction loss from precomputed Gram matrices and an
 MTTKRP term for one mode.
@@ -112,7 +200,7 @@ provides a fast way to monitor convergence with minimal additional cost.
     A_n::AbstractMatrix{T},
     mttkrp_n::AbstractMatrix{T},
     X_norm2::T
-) where {N, T <: Real}
+) where {N, T <: Number}
     # ||X̂||_F^2 = sum(G₁ .* G₂ .* ... .* G_N)
     R1, R2 = size(Gts[1])
     norm2_recon = zero(T)
@@ -133,7 +221,7 @@ end
         B::AbstractMatrix{T},
         C::AbstractMatrix{T},
         X::AbstractArray{T, 3},
-    ) where {T <: Real}
+    ) where {T <: Number}
 
 Computes the CP decomposition loss for a 3rd-order tensor `X` from factor matrices
 `A`, `B`, and `C` by explicitly forming the reconstruction.
@@ -160,8 +248,8 @@ computational cost.
     A::AbstractMatrix{T},
     B::AbstractMatrix{T},
     C::AbstractMatrix{T},
-    X::AbstractArray{T, 3}
-) where {T <: Real}
+    X::AbstractArray{U, 3}
+) where {T <: Number, U <: Number}
     @tullio recon[i, j, k] := A[i, r] * B[j, r] * C[k, r]
     @tullio loss := (X[i, j, k] - recon[i, j, k])^2
     return loss
@@ -175,7 +263,7 @@ end
         C::AbstractMatrix{T},
         mttkrp_C::AbstractMatrix{T},
         X_norm2::T,
-    ) where {T <: Real}
+    ) where {T <: Number}
 
 Computes the squared CP reconstruction loss for a 3rd-order tensor from precomputed
 Gram matrices and the MTTKRP term of the third mode.
@@ -207,9 +295,102 @@ iterations.
     C::AbstractMatrix{T},
     mttkrp_C::AbstractMatrix{T},
     X_norm2::T
-) where {T <: Real}
+) where {T <: Number}
     loss = X_norm2 - 2 * dot(mttkrp_C, C) + sum(Gt_A .* Gt_B .* Gt_C)
     return max(loss, zero(T))
+end
+
+"""
+    cp_loss(
+        p::AbstractVector{T},
+        cp_rank::Int,
+        X::AbstractArray{U, 3},
+    )::T where {T <: Real, U <: Real}
+
+Computes the CP decomposition loss for a 3rd-order tensor `X` from a flattened
+parameter vector `p`.
+
+This function first interprets `p` as the concatenation of three CP factor matrices
+with column dimension `cp_rank`, reshaping it into factors `A`, `B`, and `C` using
+[`flat_to_cp_factors`](@ref). It then evaluates the squared Frobenius reconstruction
+loss `||X - X̂||_F^2` by calling the corresponding 3-way [`cp_loss`](@ref) method.
+
+This representation is convenient when CP factors are optimized in flattened form,
+for example in first-order or second-order vector-based optimization routines.
+
+# Arguments
+- `p`: Flat parameter vector encoding the factor matrices `A`, `B`, and `C` in
+  column-major order.
+- `cp_rank`: CP rank, i.e. the common number of columns of the factor matrices.
+- `X`: Input 3rd-order tensor.
+
+# Returns
+- The squared Frobenius loss `||X - X̂||_F^2`, where `X̂` is the CP reconstruction
+  induced by the factors stored in `p`.
+"""
+function cp_loss(
+    p::AbstractVector{T},
+    cp_rank::Int,
+    X::AbstractArray{U, 3}
+)::T where {T <: Real, U <: Real}
+    A, B, C = flat_to_cp_factors(p, cp_rank, size(X))
+    loss = cp_loss(A, B, C, X)
+    return loss
+end
+
+"""
+    cp_loss_grad!(
+        g::AbstractVector{T},
+        p::AbstractVector{T},
+        cp_rank::Int,
+        tensor::AbstractArray{U, 3},
+    ) where {T <: Real, U <: Real}
+
+Computes the gradient of the 3rd-order CP reconstruction loss with respect to a
+flattened parameter vector `p`, and writes the result in-place to `g`.
+
+This function interprets `p` as the flattened CP factors `A`, `B`, and `C`, and
+interprets `g` as storage for the corresponding factor gradients `gA`, `gB`, and
+`gC`. The gradient is evaluated from the analytic derivative of the squared
+Frobenius loss `||X - X̂||_F^2`, using MTTKRP terms and Gram matrices of the factor
+matrices. No new flattened gradient vector is allocated; instead, the provided
+buffer `g` is overwritten in-place.
+
+This is useful in optimization workflows where CP factors are represented as a
+single parameter vector and gradients must be supplied in the same flattened format.
+
+# Arguments
+- `g`: Output gradient vector, overwritten in-place with the gradient of the loss
+  with respect to `p`.
+- `p`: Flat parameter vector encoding the factor matrices in column-major order.
+- `cp_rank`: CP rank, i.e. the common number of columns of the factor matrices.
+- `tensor`: Input 3rd-order tensor.
+
+# Returns
+- `nothing`.
+"""
+function cp_loss_grad!(
+    g::AbstractVector{T},
+    p::AbstractVector{T},
+    cp_rank::Int,
+    tensor::AbstractArray{U,3}
+) where {T<: Real, U <: Real}
+    A, B, C = flat_to_cp_factors(p, cp_rank, size(tensor))
+    gA, gB, gC = flat_to_cp_factors(g, cp_rank, size(tensor))
+
+    GtA = A' * A
+    GtB = B' * B
+    GtC = C' * C
+
+    @tullio mttkrp_A[i, r] := tensor[i, j, k] * B[j, r] * C[k, r]
+    @tullio mttkrp_B[j, r] := tensor[i, j, k] * A[i, r] * C[k, r]
+    @tullio mttkrp_C[k, r] := tensor[i, j, k] * A[i, r] * B[j, r]
+
+    gA .= -2 .* mttkrp_A .+ 2 .* (A * (GtB .* GtC))
+    gB .= -2 .* mttkrp_B .+ 2 .* (B * (GtA .* GtC))
+    gC .= -2 .* mttkrp_C .+ 2 .* (C * (GtA .* GtB))
+
+    return nothing
 end
 
 """
