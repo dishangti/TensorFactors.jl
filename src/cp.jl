@@ -1,7 +1,8 @@
 using LinearAlgebra
 using Tullio, LoopVectorization
+using Optim
 
-export cp_loss, cp_als
+export cp_loss, cp_loss_grad!, cp_als, cp_fit
 
 using LinearAlgebra
 
@@ -759,4 +760,71 @@ function cp_als(
     end
 
     return A, B, C
+end
+
+"""
+    cp_fit(
+        method::Optim.AbstractOptimizer,
+        cp_rank::Int,
+        X::AbstractArray{T, N};
+        max_iter::Int=typemax(Int),
+        show_trace::Bool=false,
+        show_every::Int=100,
+        p0::Union{Nothing, AbstractVector{T}}=nothing,
+    ) where {T <: Real, N}
+
+Fits a rank-`cp_rank` CP decomposition to a tensor `X` by minimizing the CP
+reconstruction loss with an optimizer from `Optim.jl`.
+
+This function represents the CP factor matrices as a single flattened parameter vector
+and solves the resulting unconstrained optimization problem using the optimizer
+specified by `method`. If no initial parameter vector is provided, one is initialized
+randomly from a standard normal distribution. After optimization, the minimizer is
+reshaped into a tuple of CP factor matrices using [`flat_to_cp_factors`](@ref).
+
+The objective minimized is the squared Frobenius reconstruction loss
+`||X - X̂||_F^2`, where `X̂` is the rank-`cp_rank` CP reconstruction induced by the
+optimized factor matrices.
+
+# Arguments
+- `method`: Optimizer from `Optim.jl`, such as `LBFGS()` or `ConjugateGradient()`.
+- `cp_rank`: Target CP rank.
+- `X`: Input tensor.
+
+# Keyword Arguments
+- `max_iter`: Maximum number of optimization iterations.
+- `show_trace`: If `true`, prints optimization progress information.
+- `show_every`: Frequency, in iterations, at which progress information is printed
+  when `show_trace=true`.
+- `p0`: Optional initial flattened parameter vector. If `nothing`, a random
+  initialization of length `cp_rank * sum(size(X))` is used.
+
+# Returns
+- `cp_factors`: A tuple of factor matrices defining the fitted CP decomposition,
+  where `cp_factors[n]` has size `(size(X, n), cp_rank)`.
+"""
+function cp_fit(
+    method::Optim.AbstractOptimizer,
+    cp_rank::Int,
+    X::AbstractArray{T, N};
+    max_iter::Int = typemax(Int),
+    show_trace::Bool = false,
+    show_every::Int = 100,
+    p0::Union{Nothing, AbstractVector{T}} = nothing,
+) where {T <: Real, N}
+    if p0 === nothing
+        p0 = randn(T, cp_rank * sum(size(X)))
+    end
+
+    f(u) = cp_loss(u, cp_rank, X)
+    g!(g, u) = cp_loss_grad!(g, u, cp_rank, X)
+    
+    od = OnceDifferentiable(f, g!, p0)
+    options = Optim.Options(iterations = max_iter, show_trace = show_trace, show_every = show_every)
+    sol = optimize(od, p0, method, options)
+    
+    minimizer = Optim.minimizer(sol)
+
+    cp_factors = flat_to_cp_factors(minimizer, cp_rank, size(X))
+    return cp_factors
 end

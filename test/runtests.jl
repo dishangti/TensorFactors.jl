@@ -3,6 +3,7 @@ using LinearAlgebra
 using Tullio, LoopVectorization
 using Random
 using ForwardDiff
+using Optim
 using Test
 
 function test_cp()
@@ -73,6 +74,9 @@ function test_cp()
         g_fd = similar(p)
         ForwardDiff.gradient!(g_fd, p -> cp_loss(p, R, X), p)
         @test norm(g - g_fd) / norm(g_fd) < 1e-6
+
+        # Test optimization based CPD
+        A_hat, B_hat, C_hat = cp_fit(LBFGS(), R, X)
     end
 end
 
