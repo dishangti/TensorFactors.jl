@@ -2,9 +2,7 @@ using LinearAlgebra
 using Tullio, LoopVectorization
 using Optim
 
-export cp_loss, cp_loss_grad!, cp_als, cp_fit
-
-using LinearAlgebra
+export cp_loss, cp_loss_grad!, cp_als, cp_opt
 
 """
     flat_to_cp_factors(
@@ -246,14 +244,27 @@ computational cost.
 - The squared Frobenius loss `||X - X̂||_F^2`.
 """
 @inline function cp_loss(
-    A::AbstractMatrix{T},
-    B::AbstractMatrix{T},
-    C::AbstractMatrix{T},
+    factors::NTuple{3, AbstractMatrix{T}},
     X::AbstractArray{U, 3}
 ) where {T <: Number, U <: Number}
+    A, B, C = factors
     @tullio recon[i, j, k] := A[i, r] * B[j, r] * C[k, r]
     @tullio loss := (X[i, j, k] - recon[i, j, k])^2
     return loss
+end
+
+@inline function cp_loss(
+    factors::NTuple{3, AbstractMatrix{T}},
+    X::AbstractArray{U, 3},
+    X_norm2::V
+) where {T <: Number, U <: Number, V <: Real}
+    A, B, C = factors
+    @tullio mttkrp_C[k, r] := X[i, j, k] * A[i, r] * B[j, r]
+    Gt_A = A' * A
+    Gt_B = B' * B
+    Gt_C = C' * C
+    loss = X_norm2 - 2 * dot(mttkrp_C, C) + sum(Gt_A .* Gt_B .* Gt_C)
+    return max(loss, zero(T))
 end
 
 """
@@ -304,8 +315,8 @@ end
 """
     cp_loss(
         p::AbstractVector{T},
-        cp_rank::Int,
         X::AbstractArray{U, 3},
+        cp_rank::Int
     )::T where {T <: Real, U <: Real}
 
 Computes the CP decomposition loss for a 3rd-order tensor `X` from a flattened
@@ -322,8 +333,8 @@ for example in first-order or second-order vector-based optimization routines.
 # Arguments
 - `p`: Flat parameter vector encoding the factor matrices `A`, `B`, and `C` in
   column-major order.
-- `cp_rank`: CP rank, i.e. the common number of columns of the factor matrices.
 - `X`: Input 3rd-order tensor.
+- `cp_rank`: CP rank, i.e. the common number of columns of the factor matrices.
 
 # Returns
 - The squared Frobenius loss `||X - X̂||_F^2`, where `X̂` is the CP reconstruction
@@ -331,11 +342,12 @@ for example in first-order or second-order vector-based optimization routines.
 """
 function cp_loss(
     p::AbstractVector{T},
+    X::AbstractArray{U, 3},
     cp_rank::Int,
-    X::AbstractArray{U, 3}
-)::T where {T <: Real, U <: Real}
+    norm2_X::V
+)::T where {T <: Real, U <: Real, V <: Real}
     A, B, C = flat_to_cp_factors(p, cp_rank, size(X))
-    loss = cp_loss(A, B, C, X)
+    loss = cp_loss((A, B, C), X, norm2_X)
     return loss
 end
 
@@ -343,8 +355,8 @@ end
     cp_loss_grad!(
         g::AbstractVector{T},
         p::AbstractVector{T},
-        cp_rank::Int,
-        tensor::AbstractArray{U, 3},
+        X::AbstractArray{U, 3},
+        cp_rank::Int
     ) where {T <: Real, U <: Real}
 
 Computes the gradient of the 3rd-order CP reconstruction loss with respect to a
@@ -364,8 +376,8 @@ single parameter vector and gradients must be supplied in the same flattened for
 - `g`: Output gradient vector, overwritten in-place with the gradient of the loss
   with respect to `p`.
 - `p`: Flat parameter vector encoding the factor matrices in column-major order.
+- `X`: Input 3rd-order tensor.
 - `cp_rank`: CP rank, i.e. the common number of columns of the factor matrices.
-- `tensor`: Input 3rd-order tensor.
 
 # Returns
 - `nothing`.
@@ -373,23 +385,27 @@ single parameter vector and gradients must be supplied in the same flattened for
 function cp_loss_grad!(
     g::AbstractVector{T},
     p::AbstractVector{T},
-    cp_rank::Int,
-    tensor::AbstractArray{U,3}
+    X::AbstractArray{U,3},
+    cp_rank::Int
 ) where {T<: Real, U <: Real}
-    A, B, C = flat_to_cp_factors(p, cp_rank, size(tensor))
-    gA, gB, gC = flat_to_cp_factors(g, cp_rank, size(tensor))
+    A, B, C = flat_to_cp_factors(p, cp_rank, size(X))
+    gA, gB, gC = flat_to_cp_factors(g, cp_rank, size(X))
 
     GtA = A' * A
     GtB = B' * B
     GtC = C' * C
 
-    @tullio mttkrp_A[i, r] := tensor[i, j, k] * B[j, r] * C[k, r]
-    @tullio mttkrp_B[j, r] := tensor[i, j, k] * A[i, r] * C[k, r]
-    @tullio mttkrp_C[k, r] := tensor[i, j, k] * A[i, r] * B[j, r]
+    H_A = GtB .* GtC
+    H_B = GtA .* GtC
+    H_C = GtA .* GtB
 
-    gA .= -2 .* mttkrp_A .+ 2 .* (A * (GtB .* GtC))
-    gB .= -2 .* mttkrp_B .+ 2 .* (B * (GtA .* GtC))
-    gC .= -2 .* mttkrp_C .+ 2 .* (C * (GtA .* GtB))
+    @tullio gA[i, r] = X[i, j, k] * B[j, r] * C[k, r]
+    @tullio gB[j, r] = X[i, j, k] * A[i, r] * C[k, r]
+    @tullio gC[k, r] = X[i, j, k] * A[i, r] * B[j, r]
+
+    gA .= -2 .* gA .+ 2 .* (A * H_A)
+    gB .= -2 .* gB .+ 2 .* (B * H_B)
+    gC .= -2 .* gC .+ 2 .* (C * H_C)
 
     return nothing
 end
@@ -538,6 +554,77 @@ function mttkrp!(
 end
 
 """
+    colnormalize!(
+        A::AbstractMatrix{T},
+        lambda::AbstractVector{T},
+    ) where {T <: Number}
+
+Normalizes each column of matrix `A` in place and absorbs the corresponding column
+norms into the weight vector `lambda`.
+
+For each column `r`, this method computes its Euclidean norm. If the norm is positive,
+the column is rescaled to have unit norm, and `lambda[r]` is multiplied by the original
+column norm.
+
+This routine is commonly used in tensor factorization algorithms to separate per-column
+scaling factors from factor matrices while keeping the product represented by
+`A` and `lambda` unchanged.
+
+# Arguments
+- `A`: Input matrix whose columns are normalized in place.
+- `lambda`: Vector of column weights. Its length must equal `size(A, 2)`.
+
+# Returns
+- `A, lambda`: The normalized matrix `A` and the updated weight vector `lambda`.
+"""
+function colnormalize!(
+    A::AbstractMatrix{T},
+    lambda::AbstractVector{T},
+) where {T<:Number}
+    R = size(A, 2)
+    @assert length(lambda) == R
+
+    @inbounds for r in 1:R
+        col = view(A, :, r)
+        nrm = norm(col)
+        rmul!(col, inv(nrm))
+        lambda[r] = nrm
+    end
+
+    return A, lambda
+end
+
+"""
+    colnormalize!(A::AbstractMatrix{T}) where {T <: Number}
+
+Normalizes each column of matrix `A` in place to have unit Euclidean norm.
+
+For each column `r`, this method computes its Euclidean norm. If the norm is positive,
+the column is rescaled in place so that its 2-norm becomes `one(T)`.
+
+This overload is useful when only column normalization is needed and no separate
+weight vector is maintained.
+
+# Arguments
+- `A`: Input matrix whose columns are normalized in place.
+
+# Returns
+- `A`: The normalized matrix `A`.
+"""
+function colnormalize!(
+    A::AbstractMatrix{T}
+) where {T<:Number}
+    R = size(A, 2)
+    @inbounds for r in 1:R
+        col = view(A, :, r)
+        nrm = norm(col)
+        rmul!(col, inv(nrm))
+    end
+
+    return A
+end
+
+"""
     cp_als(
         X::AbstractArray{T, N},
         cp_rank::Int;
@@ -599,6 +686,13 @@ function cp_als(
     V = Matrix{T}(undef, cp_rank, cp_rank)
     mttkrp_buf = ntuple(n -> Matrix{T}(undef, dims[n], cp_rank), N)
 
+    # Preallocate the lambda vector for column normalization
+    lambda = ones(T, cp_rank)
+
+    # Buffer for loss check
+    loss_GtN = Matrix{T}(undef, cp_rank, cp_rank)
+    loss_factorN = Matrix{T}(undef, dims[N], cp_rank)
+
     norm_tensor = norm(X)
     norm2_tensor = norm_tensor^2
     last_loss = sqrt(cp_loss(factors, X)) / norm_tensor
@@ -625,13 +719,18 @@ function cp_als(
             
             copyto!(factors[n], mttkrp_buf[n])
             rdiv!(factors[n], cholesky!(Symmetric(V)))
-            
+            colnormalize!(factors[n], lambda)  # Absorb scaling into lambda to prevent numerical issues
+
             # Update the corresponding Gram matrix
             mul!(Gts[n], factors[n]', factors[n])
         end
 
         # Quickly evaluate the current loss using the last updated dimension N
-        loss = sqrt(cp_loss(Gts, factors[N], mttkrp_buf[N], norm2_tensor)) / norm_tensor
+        @. loss_factorN = factors[N] .* lambda'
+        copyto!(loss_GtN, Gts[N])  # Backup GtN before overwriting for loss evaluation
+        mul!(Gts[N], loss_factorN', loss_factorN)  # Ensure GtN is up to date for loss evaluation
+        loss = sqrt(cp_loss(Gts, loss_factorN, mttkrp_buf[N], norm2_tensor)) / norm_tensor
+        copyto!(Gts[N], loss_GtN)  # Restore GtN after loss evaluation
 
         if show_trace && iter % show_every == 0
             println("Iteration $iter: Time = $(time() - start_time) s, Loss = $loss")
@@ -646,13 +745,13 @@ function cp_als(
     end
 
     # Return a Tuple containing all factors instead of just A, B, C
-    return factors
+    return lambda, factors
 end
 
 """
     cp_als(
-        tensor::AbstractArray{T, 3},
-        cpd_rank::Int;
+        X::AbstractArray{T, 3},
+        cp_rank::Int;
         max_iter::Int=10000,
         dloss_rtol::Float64=1e-7,
         loss_rtol::Float64=1e-8,
@@ -660,7 +759,7 @@ end
         show_every::Int=100,
     ) where {T <: Real}
 
-Computes a rank-`cpd_rank` CANDECOMP/PARAFAC (CP) decomposition of a 3rd-order
+Computes a rank-`cp_rank` CANDECOMP/PARAFAC (CP) decomposition of a 3rd-order
 tensor `tensor` using alternating least squares (ALS).
 
 This method is a specialized implementation for 3-way tensors. It iteratively updates
@@ -673,8 +772,8 @@ small or the change in loss between successive iterations falls below the specif
 tolerance.
 
 # Arguments
-- `tensor`: Input 3rd-order tensor of size `(I, J, K)`.
-- `cpd_rank`: Target CP rank.
+- `X`: Input 3rd-order tensor of size `(I, J, K)`.
+- `cp_rank`: Target CP rank.
 
 # Keyword Arguments
 - `max_iter`: Maximum number of ALS iterations.
@@ -687,37 +786,42 @@ tolerance.
   when `show_trace=true`.
 
 # Returns
-- `A`: Factor matrix of size `(size(tensor, 1), cpd_rank)`.
-- `B`: Factor matrix of size `(size(tensor, 2), cpd_rank)`.
-- `C`: Factor matrix of size `(size(tensor, 3), cpd_rank)`.
+- `A`: Factor matrix of size `(size(X, 1), cp_rank)`.
+- `B`: Factor matrix of size `(size(X, 2), cp_rank)`.
+- `C`: Factor matrix of size `(size(X, 3), cp_rank)`.
 """
 function cp_als(
-    tensor::AbstractArray{T,3},
-    cpd_rank::Int;
+    X::AbstractArray{T,3},
+    cp_rank::Int;
     max_iter::Int=10000,
     dloss_rtol::Float64=1e-8,
     loss_rtol::Float64=1e-8,
     show_trace::Bool=false,
     show_every::Int=100,
 ) where {T<:Real}
-    I, J, K = size(tensor)
+    I, J, K = size(X)
 
-    A = randn(T, I, cpd_rank)
-    B = randn(T, J, cpd_rank)
-    C = randn(T, K, cpd_rank)
-    mttkrp_C = Matrix{T}(undef, K, cpd_rank)
-    V = Matrix{T}(undef, cpd_rank, cpd_rank)    # For Hardamard product of Gram matrices
+    A = randn(T, I, cp_rank)
+    B = randn(T, J, cp_rank)
+    C = randn(T, K, cp_rank)
+    mttkrp_C = Matrix{T}(undef, K, cp_rank)
+    V = Matrix{T}(undef, cp_rank, cp_rank)    # For Hardamard product of Gram matrices
 
-    GtA = Matrix{T}(undef, cpd_rank, cpd_rank)
-    GtB = Matrix{T}(undef, cpd_rank, cpd_rank)
-    GtC = Matrix{T}(undef, cpd_rank, cpd_rank)
+    GtA = Matrix{T}(undef, cp_rank, cp_rank)
+    GtB = Matrix{T}(undef, cp_rank, cp_rank)
+    GtC = Matrix{T}(undef, cp_rank, cp_rank)
+
+    C_loss = Matrix{T}(undef, K, cp_rank)  # Buffer for MTTKRP of C to evaluate loss
+    GtC_loss = Matrix{T}(undef, cp_rank, cp_rank)  # Buffer for GtC to evaluate loss
+
+    lambda = ones(T, cp_rank)   # Normalization of factors to prevent numerical issues
 
     mul!(GtB, B', B)
     mul!(GtC, C', C)
     
-    norm_tensor = norm(tensor)
+    norm_tensor = norm(X)
     norm2_tensor = norm_tensor^2
-    last_loss = sqrt(cp_loss(A, B, C, tensor)) / norm_tensor
+    last_loss = sqrt(cp_loss((A, B, C), X, norm2_tensor)) / norm_tensor
 
     if show_trace
         println("Iteration 0: Time = 0.0 s, Loss = $last_loss")
@@ -725,26 +829,31 @@ function cp_als(
     start_time = time()
     for iter in 1:max_iter
         # Update A
-        @tullio A[i, r] = tensor[i, j, k] * B[j, r] * C[k, r]
+        @tullio A[i, r] = X[i, j, k] * B[j, r] * C[k, r]
         @. V = GtB * GtC
         rdiv!(A, cholesky!(Symmetric(V)))  # Solve A * V_A = mttkrp_A
+        colnormalize!(A)  # Absorb scaling into lambda to prevent numerical issues
         mul!(GtA, A', A)
 
         # Update B
-        @tullio B[j, r] = tensor[i, j, k] * A[i, r] * C[k, r]
+        @tullio B[j, r] = X[i, j, k] * A[i, r] * C[k, r]
         @. V = GtA * GtC
         rdiv!(B, cholesky!(Symmetric(V)))
+        colnormalize!(B)
         mul!(GtB, B', B)
 
         # Update C
-        @tullio mttkrp_C[k, r] = tensor[i, j, k] * A[i, r] * B[j, r]
+        @tullio mttkrp_C[k, r] = X[i, j, k] * A[i, r] * B[j, r]
         @. V = GtA * GtB
         copyto!(C, mttkrp_C)
         rdiv!(C, cholesky!(Symmetric(V)))
+        colnormalize!(C, lambda)
         mul!(GtC, C', C)
 
         # Evaluate loss
-        loss = sqrt(cp_loss(GtA, GtB, GtC, C, mttkrp_C, norm2_tensor)) / norm_tensor
+        @. C_loss = C * lambda'
+        mul!(GtC_loss, C_loss', C_loss)
+        loss = sqrt(cp_loss(GtA, GtB, GtC_loss, C_loss, mttkrp_C, norm2_tensor)) / norm_tensor
 
         if show_trace && iter % show_every == 0
             println("Iteration $iter: Time = $(time() - start_time) s, Loss = $loss")
@@ -753,20 +862,20 @@ function cp_als(
         stop_criterion = (abs(last_loss - loss) < dloss_rtol
                           || loss < loss_rtol)
         if iter > 1 && stop_criterion
-            show_trace && println("Converged at iteration $iter, Loss = $loss")
+            show_trace && println("Converged at iteration $iter: Time = $(time() - start_time) s, Loss = $loss")
             break
         end
         last_loss = loss
     end
 
-    return A, B, C
+    return lambda, A, B, C
 end
 
 """
-    cp_fit(
+    cp_opt(
         method::Optim.AbstractOptimizer,
-        cp_rank::Int,
-        X::AbstractArray{T, N};
+        X::AbstractArray{T, N},
+        cp_rank::Int;
         max_iter::Int=typemax(Int),
         show_trace::Bool=false,
         show_every::Int=100,
@@ -788,8 +897,8 @@ optimized factor matrices.
 
 # Arguments
 - `method`: Optimizer from `Optim.jl`, such as `LBFGS()` or `ConjugateGradient()`.
-- `cp_rank`: Target CP rank.
 - `X`: Input tensor.
+- `cp_rank`: Target CP rank.
 
 # Keyword Arguments
 - `max_iter`: Maximum number of optimization iterations.
@@ -803,21 +912,24 @@ optimized factor matrices.
 - `cp_factors`: A tuple of factor matrices defining the fitted CP decomposition,
   where `cp_factors[n]` has size `(size(X, n), cp_rank)`.
 """
-function cp_fit(
+function cp_opt(
     method::Optim.AbstractOptimizer,
-    cp_rank::Int,
-    X::AbstractArray{T, N};
-    max_iter::Int = typemax(Int),
+    X::AbstractArray{T, 3},
+    cp_rank::Int;
+    max_iter::Int = 10000,
     show_trace::Bool = false,
     show_every::Int = 100,
-    p0::Union{Nothing, AbstractVector{T}} = nothing,
-) where {T <: Real, N}
-    if p0 === nothing
+    init_factors::Union{Nothing, NTuple{3, AbstractMatrix{T}}} = nothing,
+) where {T <: Real}
+    if init_factors === nothing
         p0 = randn(T, cp_rank * sum(size(X)))
+    else
+        p0 = cp_factors_to_flat(init_factors)
     end
 
-    f(u) = cp_loss(u, cp_rank, X)
-    g!(g, u) = cp_loss_grad!(g, u, cp_rank, X)
+    norm2_X = sum(abs2, X)
+    f(u) = cp_loss(u, X, cp_rank, norm2_X)
+    g!(g, u) = cp_loss_grad!(g, u, X, cp_rank)
     
     od = OnceDifferentiable(f, g!, p0)
     options = Optim.Options(iterations = max_iter, show_trace = show_trace, show_every = show_every)

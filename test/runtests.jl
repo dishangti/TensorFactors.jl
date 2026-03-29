@@ -19,13 +19,31 @@ function test_cp()
     @testset "cp.jl" begin
         Random.seed!(42)
 
+        # Test column normalization
+        A = randn(20, 10)
+        TensorFactors.colnormalize!(A)
+        all_norms = vec(norm.(eachcol(A)))
+        @test all(isfinite.(all_norms)) && all(isapprox.(all_norms, 1.0; rtol=1e-12))
+        
+        # Test column normalization with lambda obsorbed
+        A = randn(20, 10)
+        A_copy = copy(A)
+        lambda = Vector{Float64}(undef, size(A, 2))
+        TensorFactors.colnormalize!(A, lambda)
+        all_norms = vec(norm.(eachcol(A)))
+        A_hat = A .* lambda'
+        @test (all(isfinite.(all_norms))
+            && all(isapprox.(all_norms, 1.0; rtol=1e-12))
+            && norm(A_hat - A_copy) / norm(A_copy) < 1e-12)
+
         # Test cp_als on the synthetic tensor with 4-tensor
         I, J, K, L, R = 20, 30, 50, 60, 10
         A, B, C, D = randn(I, R), randn(J, R), randn(K, R), randn(L, R)
         X = zeros(I, J, K, L)
         @tullio X[i, j, k, l] := A[i, r] * B[j, r] * C[k, r] * D[l, r]
-        A_hat, B_hat, C_hat, D_hat = cp_als(X, R)
-        loss_hat = sqrt(cp_loss((A_hat, B_hat, C_hat, D_hat), X)) / norm(X)
+        lambda, factors = cp_als(X, R)
+        A_hat, B_hat, C_hat, D_hat = factors
+        loss_hat = sqrt(cp_loss((A_hat .* lambda', B_hat, C_hat, D_hat), X)) / norm(X)
         @test isfinite(loss_hat) && loss_hat < 1e-7
 
         # Test cp_als on the synthetic tensor with 3-tensor
@@ -53,8 +71,9 @@ function test_cp()
         @test norm(mttkrp_n2 - mttkrp_n) / norm(mttkrp_n) < 1e-8
 
         # Test cp_als on the synthetic tensor
-        A_hat, B_hat, C_hat = cp_als(X, R)
-        loss_hat = sqrt(cp_loss((A_hat, B_hat, C_hat), X)) / norm(X)
+        lambda, A_hat, B_hat, C_hat = cp_als(X, R; show_trace=true, show_every=50)
+        loss_hat = sqrt(cp_loss((A_hat .* lambda', B_hat, C_hat), X)) / norm(X)
+        println("Loss after ALS optimization: $loss_hat")
         @test isfinite(loss_hat) && loss_hat < 1e-7
 
         # Test conversion between flat parameter vector and CP factors
@@ -64,19 +83,30 @@ function test_cp()
             || norm(C - C_hat) / norm(C) < 1e-14)
 
         # Test flat loss
-        loss = cp_loss(p, R, X)
+        norm2_X = sum(abs2, X)
+        loss = cp_loss(p, X, R, norm2_X)
         @test isfinite(loss) && loss < 1e-7
 
         # Test flat gradient
         p = randn(length(p))
         g = similar(p)
-        TensorFactors.cp_loss_grad!(g, p, R, X)
+        TensorFactors.cp_loss_grad!(g, p, X, R)
         g_fd = similar(p)
-        ForwardDiff.gradient!(g_fd, p -> cp_loss(p, R, X), p)
-        @test norm(g - g_fd) / norm(g_fd) < 1e-6
+        ForwardDiff.gradient!(g_fd, p -> cp_loss(p, X, R, norm2_X), p)
+        @test norm(g - g_fd) / norm(g_fd) < 1e-7
 
-        # Test optimization based CPD
-        A_hat, B_hat, C_hat = cp_fit(LBFGS(), R, X)
+        # Test optimization based CPD with random initialization
+        A_hat, B_hat, C_hat = cp_opt(ConjugateGradient(), X, R; show_trace=true, show_every=50)
+        loss_hat = sqrt(cp_loss((A_hat, B_hat, C_hat), X, norm2_X)) / norm(X)
+        println("Loss after optimization with random initialization: $loss_hat")
+        @test isfinite(loss_hat) && loss_hat < 1e-12
+
+        # # Test optimization based CPD with ALS initialization
+        # lambda, A_hat, B_hat, C_hat = cp_als(X, R; dloss_rtol=1e-7, show_trace=true, show_every=50)
+        # A_hat, B_hat, C_hat = cp_opt(ConjugateGradient(), X, R; show_trace=true, show_every=1, init_factors=(A_hat .* lambda', B_hat, C_hat))
+        # loss_hat = sqrt(cp_loss((A_hat, B_hat, C_hat), X, norm2_X)) / norm(X)
+        # println("Loss after optimization with ALS initialization: $loss_hat")
+        # @test isfinite(loss_hat) && loss_hat < 1e-12
     end
 end
 
