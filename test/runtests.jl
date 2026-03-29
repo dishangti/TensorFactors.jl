@@ -53,8 +53,9 @@ function test_cp()
         @test norm(mttkrp_n2 - mttkrp_n) / norm(mttkrp_n) < 1e-8
 
         # Test cp_als on the synthetic tensor
-        A_hat, B_hat, C_hat = cp_als(X, R)
-        loss_hat = sqrt(cp_loss((A_hat, B_hat, C_hat), X)) / norm(X)
+        lambda, A_hat, B_hat, C_hat = cp_als(X, R; show_trace=true, show_every=50)
+        loss_hat = sqrt(cp_loss((A_hat .* lambda', B_hat, C_hat), X)) / norm(X)
+        println("Loss after ALS optimization: $loss_hat")
         @test isfinite(loss_hat) && loss_hat < 1e-7
 
         # Test conversion between flat parameter vector and CP factors
@@ -64,19 +65,23 @@ function test_cp()
             || norm(C - C_hat) / norm(C) < 1e-14)
 
         # Test flat loss
-        loss = cp_loss(p, R, X)
+        norm2_X = sum(abs2, X)
+        loss = cp_loss(p, X, R, norm2_X)
         @test isfinite(loss) && loss < 1e-7
 
         # Test flat gradient
         p = randn(length(p))
         g = similar(p)
-        TensorFactors.cp_loss_grad!(g, p, R, X)
+        TensorFactors.cp_loss_grad!(g, p, X, R)
         g_fd = similar(p)
-        ForwardDiff.gradient!(g_fd, p -> cp_loss(p, R, X), p)
-        @test norm(g - g_fd) / norm(g_fd) < 1e-6
+        ForwardDiff.gradient!(g_fd, p -> cp_loss(p, X, R, norm2_X), p)
+        @test norm(g - g_fd) / norm(g_fd) < 1e-7
 
         # Test optimization based CPD
-        A_hat, B_hat, C_hat = cp_fit(LBFGS(), R, X)
+        A_hat, B_hat, C_hat = cp_fit(LBFGS(), R, X; show_trace=true, show_every=50)
+        loss_hat = sqrt(cp_loss((A_hat, B_hat, C_hat), X)) / norm(X)
+        @test isfinite(loss_hat) && loss_hat < 1e-7
+
     end
 end
 
