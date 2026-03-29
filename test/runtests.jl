@@ -101,12 +101,12 @@ function test_cp()
         println("Loss after optimization with random initialization: $loss_hat")
         @test isfinite(loss_hat) && loss_hat < 1e-12
 
-        # # Test optimization based CPD with ALS initialization
-        # lambda, A_hat, B_hat, C_hat = cp_als(X, R; dloss_rtol=1e-7, show_trace=true, show_every=50)
-        # A_hat, B_hat, C_hat = cp_opt(ConjugateGradient(), X, R; show_trace=true, show_every=1, init_factors=(A_hat .* lambda', B_hat, C_hat))
-        # loss_hat = sqrt(cp_loss((A_hat, B_hat, C_hat), X, norm2_X)) / norm(X)
-        # println("Loss after optimization with ALS initialization: $loss_hat")
-        # @test isfinite(loss_hat) && loss_hat < 1e-12
+        # Test optimization based CPD with ALS initialization
+        lambda, A_hat, B_hat, C_hat = cp_als(X, R; dloss_rtol=1e-7, show_trace=true, show_every=50)
+        A_hat, B_hat, C_hat = cp_opt(ConjugateGradient(), X, R; show_trace=true, show_every=1, init_factors=(A_hat .* lambda', B_hat, C_hat))
+        loss_hat = sqrt(cp_loss((A_hat, B_hat, C_hat), X, norm2_X)) / norm(X)
+        println("Loss after optimization with ALS initialization: $loss_hat")
+        @test isfinite(loss_hat) && loss_hat < 1e-12
     end
 end
 
