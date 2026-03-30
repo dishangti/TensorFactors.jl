@@ -82,3 +82,46 @@ factors_opt = cp_opt(
 # Unpack the resulting factor matrices
 A_opt, B_opt, C_opt = factors_opt
 ```
+
+## Tucker Tensor Decomposition
+
+This package provides highly optimized routines for computing the **Tucker Decomposition** (often associated with Higher-Order Principal Component Analysis) of $N$-dimensional arrays in Julia. 
+
+The Tucker decomposition factorizes a tensor into a dense, compressed "core" tensor multiplied by an orthogonal factor matrix along each mode. For an $N$-order tensor $\mathcal{X}$, this approximates the tensor as:
+$$\mathcal{X} \approx \mathcal{S} \times_1 U^{(1)} \times_2 U^{(2)} \dots \times_N U^{(N)}$$
+where $\mathcal{S}$ is the core tensor, $U^{(n)}$ are the orthogonal factor matrices, and $\times_n$ denotes the $n$-mode product (Tensor-Times-Matrix).
+
+This implementation is heavily tuned for performance. It completely bypasses the computational bottlenecks of standard SVDs on massively wide unfolded matrices by leveraging the symmetric Gram matrix trick ($A_{(n)}A_{(n)}^T$) combined with pure BLAS `SYRK` routines. Memory allocations are strictly minimized through intelligent buffer pooling and type-stable `Tuple` permutations.
+
+### Features
+
+* **`hosvd`**: Computes the Truncated Higher-Order Singular Value Decomposition (HOSVD). Provides lightning-fast, deterministic compression of high-dimensional data to specified target ranks.
+* **`ttm`**: $n$-mode product (Tensor-Times-Matrix) operations. Enforces contiguous memory layouts to guarantee maximum BLAS matrix multiplication throughput.
+
+### Usage Examples
+
+#### 1. Truncated HOSVD (`hosvd`)
+
+The HOSVD is the standard method for computing a Tucker decomposition. It is highly effective for data compression, dimensionality reduction, and feature extraction in multi-way data.
+
+```julia
+using LinearAlgebra
+using TensorFactors # Replace with your actual package name
+
+# 1. Create a synthetic 3rd-order tensor (e.g., 100 x 150 x 200)
+I, J, K = 100, 150, 200
+X = randn(I, J, K)
+
+# 2. Specify the target truncation ranks for each mode
+target_ranks = (10, 15, 20)
+
+# 3. Run the Truncated HOSVD algorithm
+# S is the compressed core tensor, U is an N-Tuple of factor matrices
+S, U = hosvd(X, target_ranks)
+
+println("Tucker Decomposition complete!")
+println("Core Tensor (S): ", size(S)) # Output: (10, 15, 20)
+println("Factor U1: ", size(U[1]))    # Output: (100, 10)
+println("Factor U2: ", size(U[2]))    # Output: (150, 15)
+println("Factor U3: ", size(U[3]))    # Output: (200, 20)
+```
