@@ -1,6 +1,6 @@
 using LinearAlgebra
 
-export hosvd, ttm
+export tucker_hosvd, ttm, tucker_contract
 
 """
     unfold_mode(
@@ -101,7 +101,7 @@ are further optimized by pooling matrix buffers based on the tensor's unique dim
 - `factors`: A tuple of `N` orthogonal factor matrices. The `n`-th matrix, 
   `factors[n]`, has a size of `(size(A, n), ranks[n])`.
 """
-function hosvd(
+function tucker_hosvd(
     A::AbstractArray{T,N},
     ranks::NTuple{N,Int}
 ) where {T <: Number,N}
@@ -131,4 +131,60 @@ function hosvd(
     end
     
     return S, factors
+end
+
+"""
+    tucker_contract(core::AbstractArray{T, N}, factors::NTuple{N, <:AbstractMatrix{T}}) where {T <: Number, N}
+
+Contract a Tucker decomposition, consisting of a core tensor and `N` factor matrices, into a full tensor.
+
+This function reconstructs a full `N`-dimensional tensor by multi-linear product of a 
+core tensor `G` with `N` factor matrices. To maximize performance and ensure correct 
+memory allocation, the implementation utilizes metaprogramming to generate specialized 
+methods for `N` ranging from 3 to 10. Each method leverages `@tullio` for efficient, 
+multi-threaded tensor contraction. By using metaprogramming to unpack the factor 
+matrices into distinct variables, the `@tullio` symbolic analyzer can generate 
+highly optimized kernel loops without the overhead of indexing into a collection.
+
+# Arguments
+- `core`: An `N`-dimensional core tensor of size (r1, r2, ..., rN).
+- `factors`: An `N`-element tuple of matrices, where each matrix `factors[n]` 
+  of size (In, rn) represents the factor matrix for the `n`-th mode.
+
+# Returns
+- `X`: The reconstructed `N`-dimensional tensor of size (I1, I2, ..., IN).
+"""
+function tucker_contract end
+
+for N in 3:10
+    # Generate variable names for factor matrices: [:A1, :A2, ..., :AN]
+    matrix_vars = [Symbol("A", d) for d in 1:N]
+    
+    # Generate index symbols for the output tensor: [:i1, :i2, ..., :iN]
+    out_idx = [Symbol("i", d) for d in 1:N]
+    
+    # Generate index symbols for the core tensor (summation indices): [:r1, :r2, ..., :rN]
+    core_idx = [Symbol("r", d) for d in 1:N]
+
+    # Build the factor matrix multiplication terms: [A1[i1, r1], A2[i2, r2], ...]
+    matrix_terms = [:( $(matrix_vars[d])[$(out_idx[d]), $(core_idx[d])] ) for d in 1:N]
+    
+    # Build the core tensor term: G[r1, r2, ..., rN]
+    core_term = :( G[$(core_idx...)] )
+    
+    # Combine all terms into the product for the Right-Hand Side (RHS)
+    # Result: G[r1, ..., rN] * A1[i1, r1] * A2[i2, r2] * ...
+    rhs = Expr(:call, :*, core_term, matrix_terms...)
+
+    # Build the left-hand side tuple unpacking for factor matrices: (A1, A2, ..., AN)
+    unpack_factors = Expr(:tuple, matrix_vars...)
+
+    @eval begin
+        function tucker_contract(core::AbstractArray{T, $N}, factors::NTuple{$N, <:AbstractMatrix{T}}) where {T <: Number}
+            G = core
+            $unpack_factors = factors
+            @tullio X[$(out_idx...)] := $rhs
+            return X
+        end
+    end
 end

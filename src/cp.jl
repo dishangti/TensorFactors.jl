@@ -2,7 +2,7 @@ using LinearAlgebra
 using Tullio, LoopVectorization
 using Optim
 
-export cp_loss, cp_loss_grad!, cp_als, cp_opt
+export cp_loss, cp_loss_grad!, cp_als, cp_opt, cp_contract
 
 """
     flat_to_cp_factors(
@@ -939,4 +939,50 @@ function cp_opt(
 
     cp_factors = flat_to_cp_factors(minimizer, cp_rank, size(X))
     return cp_factors
+end
+
+"""
+    cp_contract(factors::NTuple{N, <:AbstractMatrix{T}}) where {T <: Number, N}
+
+Contract a CP (Canonical Polyadic) decomposition with `N` factor matrices into a full tensor.
+
+This function reconstructs a full `N`-dimensional tensor from its factor matrices. To 
+maximize performance and ensure correct memory allocation, the implementation utilizes 
+metaprogramming to generate specialized methods for `N` ranging from 2 to 10. Each 
+method leverages `@tullio` for efficient, multi-threaded tensor contraction, ensuring 
+that intermediate allocations are optimized by providing concrete matrix variables to 
+the macro's symbolic analyzer.
+
+# Arguments
+- `factors`: An `N`-element tuple of matrices, where each matrix `factors[n]` 
+  represents the factor matrix for the `n`-th mode.
+
+# Returns
+- `X`: The reconstructed `N`-dimensional tensor.
+"""
+function cp_contract end
+
+for N in 3:10
+    # Generate independent variable names for each matrix, for example: :A1, :A2, ..., :AN
+    vars = [Symbol("A", d) for d in 1:N]
+
+    # Generate tensor index symbols, for example: :i1, :i2, ..., :iN
+    idx = [Symbol("i", d) for d in 1:N]
+
+    # Build the tuple unpacking expression on the left-hand side, for example: :(A1, A2, A3)
+    unpack_tuple = Expr(:tuple, vars...)
+
+    # Build the multiplication expression on the right-hand side, for example:
+    # :( A1[i1, r] * A2[i2, r] * A3[i3, r] )
+    rhs_args = [:( $(vars[d])[$(idx[d]), r] ) for d in 1:N]
+    rhs = Expr(:call, :*, rhs_args...)
+
+    # Generate and register the function
+    @eval begin
+        function cp_contract(factors::NTuple{$N, <:AbstractMatrix{T}}) where {T <: Number}
+            $unpack_tuple = factors
+            @tullio X[$(idx...)] := $rhs
+            return X
+        end
+    end
 end

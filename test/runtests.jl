@@ -51,6 +51,11 @@ function test_cp()
         A, B, C = randn(I, R), randn(J, R), randn(K, R)
         @tullio X[i, j, k] := A[i, r] * B[j, r] * C[k, r]
 
+        # Test contraction
+        X_hat = cp_contract((A, B, C))
+        rel_err = norm(X - X_hat) / norm(X)
+        @test rel_err < 1e-14
+
         # Test cp_loss with the true factors
         loss = sqrt(cp_loss((A, B, C), X)) / norm(X)      
         @test loss < 1e-10
@@ -123,17 +128,22 @@ function test_tucker()
         rel_err = norm(res - res_naive) / norm(res_naive)
         @test rel_err < 1e-14
 
-        # HOSVD test
+        # Contraction test
         I, J, K = 20, 30, 40
         S_I, S_J, S_K = 10, 20, 30
         U1, U2, U3 = randn(I, S_I), randn(J, S_J), randn(K, S_K)
         S = randn(S_I, S_J, S_K)
         A = similar(S)
         @tullio A[i, j, k] := S[a, b, c] * U1[i, a] * U2[j, b] * U3[k, c]
-        S, U = hosvd(A, size(S))
+        A_hat = tucker_contract(S, (U1, U2, U3))
+        rel_err = norm(A - A_hat) / norm(A)
+        @test rel_err < 1e-14
+
+        # HOSVD test
+        S_approx, U = tucker_hosvd(A, size(S))
         U1_approx, U2_approx, U3_approx = U
         A_approx = similar(A)
-        @tullio A_approx[i, j, k] := S[a, b, c] * U1_approx[i, a] * U2_approx[j, b] * U3_approx[k, c]
+        @tullio A_approx[i, j, k] := S_approx[a, b, c] * U1_approx[i, a] * U2_approx[j, b] * U3_approx[k, c]
         rel_err = norm(A - A_approx) / norm(A)
         println("Relative error after HOSVD: $rel_err")
         @test rel_err < 1e-14
