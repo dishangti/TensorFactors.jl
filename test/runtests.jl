@@ -140,7 +140,7 @@ function test_tucker()
         @test rel_err < 1e-14
 
         # HOSVD test
-        S_approx, U = hosvd(A, size(S))
+        S_approx, U = tucker_hosvd(A, size(S))
         U1_approx, U2_approx, U3_approx = U
         A_approx = similar(A)
         @tullio A_approx[i, j, k] := S_approx[a, b, c] * U1_approx[i, a] * U2_approx[j, b] * U3_approx[k, c]

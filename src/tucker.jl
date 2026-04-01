@@ -1,6 +1,6 @@
 using LinearAlgebra
 
-export hosvd, ttm, tucker_contract
+export tucker_hosvd, ttm, tucker_contract
 
 """
     unfold_mode(
@@ -101,7 +101,7 @@ are further optimized by pooling matrix buffers based on the tensor's unique dim
 - `factors`: A tuple of `N` orthogonal factor matrices. The `n`-th matrix, 
   `factors[n]`, has a size of `(size(A, n), ranks[n])`.
 """
-function hosvd(
+function tucker_hosvd(
     A::AbstractArray{T,N},
     ranks::NTuple{N,Int}
 ) where {T <: Number,N}

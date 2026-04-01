@@ -95,7 +95,7 @@ This implementation is heavily tuned for performance. It completely bypasses the
 
 ### Features
 
-* **`hosvd`**: Computes the Truncated Higher-Order Singular Value Decomposition (HOSVD). Provides lightning-fast, deterministic compression of high-dimensional data to specified target ranks.
+* **`tucker_hosvd`**: Computes the Truncated Higher-Order Singular Value Decomposition (HOSVD). Provides lightning-fast, deterministic compression of high-dimensional data to specified target ranks.
 * **`ttm`**: $n$-mode product (Tensor-Times-Matrix) operations. Enforces contiguous memory layouts to guarantee maximum BLAS matrix multiplication throughput.
 
 ### Usage Examples
@@ -108,16 +108,16 @@ The HOSVD is the standard method for computing a Tucker decomposition. It is hig
 using LinearAlgebra
 using TensorFactors # Replace with your actual package name
 
-# 1. Create a synthetic 3rd-order tensor (e.g., 100 x 150 x 200)
+# Create a synthetic 3rd-order tensor (e.g., 100 x 150 x 200)
 I, J, K = 100, 150, 200
 X = randn(I, J, K)
 
-# 2. Specify the target truncation ranks for each mode
+# Specify the target truncation ranks for each mode
 target_ranks = (10, 15, 20)
 
-# 3. Run the Truncated HOSVD algorithm
+# Run the Truncated HOSVD algorithm
 # S is the compressed core tensor, U is an N-Tuple of factor matrices
-S, U = hosvd(X, target_ranks)
+S, U = tucker_hosvd(X, target_ranks)
 
 println("Tucker Decomposition complete!")
 println("Core Tensor (S): ", size(S)) # Output: (10, 15, 20)
