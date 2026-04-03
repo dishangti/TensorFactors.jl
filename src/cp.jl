@@ -93,7 +93,7 @@ generic vector-based numerical routines.
 end
 
 """
-    cp_loss(factors::NTuple{N, AbstractMatrix{T}}, X::AbstractArray{T, N}) where {N, T <: Number}
+    cp_loss(factors::NTuple{N, <:AbstractMatrix{T}}, X::AbstractArray{T, N}, norm2_X::T) where {N, T <: Number}
 
 Computes the CP decomposition loss for an arbitrary-order tensor `X` from its factor
 matrices `factors` using pure BLAS operations.
@@ -115,11 +115,11 @@ is well suited to high-performance and GPU-compatible tensor factorization workf
   induced by `factors`.
 """
 function cp_loss(
-    factors::NTuple{N, AbstractMatrix{T}}, 
-    X::AbstractArray{T, N}
-) where {N, T <: Number}
+    factors::NTuple{N, <:AbstractMatrix{T}}, 
+    X::AbstractArray{U, N},
+    norm2_X::V
+) where {N, T <: Number, U <: Number, V <: Real}
     R = size(factors[1], 2)
-    norm2_X = sum(abs2, X)
 
     # ||X_recon||_F^2 = sum(*(A'A, B'B, C'C, ...))
     G = factors[1]' * factors[1]
@@ -198,8 +198,8 @@ provides a fast way to monitor convergence with minimal additional cost.
     Gts::NTuple{N, <:AbstractMatrix{T}},
     A_n::AbstractMatrix{T},
     mttkrp_n::AbstractMatrix{T},
-    X_norm2::T
-) where {N, T <: Number}
+    X_norm2::U
+) where {N, T <: Number, U <: Real}
     # ||X̂||_F^2 = sum(G₁ .* G₂ .* ... .* G_N)
     R1, R2 = size(Gts[1])
     norm2_recon = zero(T)
@@ -210,51 +210,49 @@ provides a fast way to monitor convergence with minimal additional cost.
     end
     norm2_recon = sum(Hardmard_prod)
 
-    loss = X_norm2 - 2 * dot(mttkrp_n, A_n) + norm2_recon
+    loss = X_norm2 - 2.0 * dot(mttkrp_n, A_n) + norm2_recon
     return max(loss, zero(T))
 end
 
 """
     cp_loss(
-        A::AbstractMatrix{T},
-        B::AbstractMatrix{T},
-        C::AbstractMatrix{T},
-        X::AbstractArray{T, 3},
-    ) where {T <: Number}
+        factors::NTuple{3, <:AbstractMatrix{T}},
+        X::AbstractArray{U, 3},
+        X_norm2::V,
+    ) where {T <: Number, U <: Number, V <: Real}
 
-Computes the CP decomposition loss for a 3rd-order tensor `X` from factor matrices
-`A`, `B`, and `C` by explicitly forming the reconstruction.
+Computes the CP decomposition loss for a 3rd-order tensor `X` from a tuple of
+factor matrices `(A, B, C)` using a Gram-based formula that avoids explicitly
+forming the reconstructed tensor.
 
-This method constructs the reconstructed tensor
+Given factor matrices `A`, `B`, and `C`, this method evaluates the squared
+Frobenius loss
 
-`X̂[i, j, k] = Σ_r A[i, r] B[j, r] C[k, r]`
+`||X - X̂||_F^2 = ||X||_F^2 - 2⟨X, X̂⟩ + ||X̂||_F^2`
 
-and then evaluates the squared Frobenius loss `||X - X̂||_F^2`. It is primarily useful
-as a straightforward reference implementation for 3-way tensors, and may also be
-convenient when the explicit reconstruction is acceptable in terms of memory and
-computational cost.
+where `X̂` is the CP reconstruction defined by the factors. The mixed term
+`⟨X, X̂⟩` is computed through an MTTKRP-like contraction with respect to `C`,
+and the reconstruction norm `||X̂||_F^2` is computed from the Hadamard product
+of the factor Gram matrices
+
+`(A' * A) .* (B' * B) .* (C' * C)`.
+
+This formulation is typically more memory-efficient than explicitly constructing
+`X̂`, and is often preferable when `||X||_F^2` is already available.
 
 # Arguments
-- `A`: First factor matrix of size `(size(X, 1), R)`.
-- `B`: Second factor matrix of size `(size(X, 2), R)`.
-- `C`: Third factor matrix of size `(size(X, 3), R)`.
+- `factors`: Tuple `(A, B, C)` of factor matrices, where
+  - `A` has size `(size(X, 1), R)`,
+  - `B` has size `(size(X, 2), R)`,
+  - `C` has size `(size(X, 3), R)`.
 - `X`: Input 3rd-order tensor.
+- `X_norm2`: Precomputed squared Frobenius norm `||X||_F^2`.
 
 # Returns
 - The squared Frobenius loss `||X - X̂||_F^2`.
 """
 @inline function cp_loss(
-    factors::NTuple{3, AbstractMatrix{T}},
-    X::AbstractArray{U, 3}
-) where {T <: Number, U <: Number}
-    A, B, C = factors
-    @tullio recon[i, j, k] := A[i, r] * B[j, r] * C[k, r]
-    @tullio loss := (X[i, j, k] - recon[i, j, k])^2
-    return loss
-end
-
-@inline function cp_loss(
-    factors::NTuple{3, AbstractMatrix{T}},
+    factors::NTuple{3, <:AbstractMatrix{T}},
     X::AbstractArray{U, 3},
     X_norm2::V
 ) where {T <: Number, U <: Number, V <: Real}
@@ -263,7 +261,7 @@ end
     Gt_A = A' * A
     Gt_B = B' * B
     Gt_C = C' * C
-    loss = X_norm2 - 2 * dot(mttkrp_C, C) + sum(Gt_A .* Gt_B .* Gt_C)
+    loss = X_norm2 - 2.0 * dot(mttkrp_C, C) + sum(Gt_A .* Gt_B .* Gt_C)
     return max(loss, zero(T))
 end
 
@@ -316,39 +314,66 @@ end
     cp_loss(
         p::AbstractVector{T},
         X::AbstractArray{U, 3},
-        cp_rank::Int
-    )::T where {T <: Real, U <: Real}
+        cp_rank::Int,
+        norm2_X::V,
+        GtA, GtB, GtC, H
+    )::T where {T <: Real, U <: Real, V <: Real}
 
-Computes the CP decomposition loss for a 3rd-order tensor `X` from a flattened
-parameter vector `p`.
+Computes the CP reconstruction loss for a 3rd-order tensor `X` from a flattened
+parameter vector `p`, using preallocated workspace buffers.
 
-This function first interprets `p` as the concatenation of three CP factor matrices
-with column dimension `cp_rank`, reshaping it into factors `A`, `B`, and `C` using
-[`flat_to_cp_factors`](@ref). It then evaluates the squared Frobenius reconstruction
-loss `||X - X̂||_F^2` by calling the corresponding 3-way [`cp_loss`](@ref) method.
+This function interprets `p` as the concatenation of the three CP factor matrices
+`A`, `B`, and `C`, each with `cp_rank` columns, via
+[`flat_to_cp_factors`](@ref). It then evaluates the squared Frobenius
+reconstruction loss
 
-This representation is convenient when CP factors are optimized in flattened form,
-for example in first-order or second-order vector-based optimization routines.
+`||X - X̂||_F^2`
+
+for the CP model induced by these factors.
+
+To reduce allocations, the function expects the squared Frobenius norm of `X`,
+`norm2_X = ||X||_F^2`, to be provided by the caller, together with workspace
+buffers for Gram matrices and their Hadamard product. Internally, it computes an
+MTTKRP term with respect to the third mode, forms the Gram matrices `A' * A`,
+`B' * B`, and `C' * C`, and combines them to evaluate the loss efficiently.
+
+This representation is useful when CP factors are optimized in flattened form,
+for example in vector-based first-order or second-order optimization routines.
 
 # Arguments
 - `p`: Flat parameter vector encoding the factor matrices `A`, `B`, and `C` in
   column-major order.
 - `X`: Input 3rd-order tensor.
 - `cp_rank`: CP rank, i.e. the common number of columns of the factor matrices.
+- `norm2_X`: Precomputed squared Frobenius norm of `X`, i.e. `sum(abs2, X)`.
+- `GtA`: Preallocated buffer for the Gram matrix `A' * A`.
+- `GtB`: Preallocated buffer for the Gram matrix `B' * B`.
+- `GtC`: Preallocated buffer for the Gram matrix `C' * C`.
+- `H`: Preallocated buffer for the Hadamard product `GtA .* GtB .* GtC`.
 
 # Returns
-- The squared Frobenius loss `||X - X̂||_F^2`, where `X̂` is the CP reconstruction
-  induced by the factors stored in `p`.
+- The squared Frobenius loss `||X - X̂||_F^2`.
+
+# Notes
+- The workspace buffers must have compatible sizes, typically `(cp_rank, cp_rank)`.
+- The return value is clamped below by `zero(T)` to avoid small negative values
+  caused by floating-point roundoff.
 """
 function cp_loss(
     p::AbstractVector{T},
     X::AbstractArray{U, 3},
     cp_rank::Int,
-    norm2_X::V
+    norm2_X::V,
+    GtA, GtB, GtC, H # Buffer
 )::T where {T <: Real, U <: Real, V <: Real}
     A, B, C = flat_to_cp_factors(p, cp_rank, size(X))
-    loss = cp_loss((A, B, C), X, norm2_X)
-    return loss
+    @tullio mttkrp_C[k, r] := X[i, j, k] * A[i, r] * B[j, r]
+    mul!(GtA, A', A)
+    mul!(GtB, B', B)
+    mul!(GtC, C', C)
+    @. H = GtA * GtB * GtC
+    loss = norm2_X - 2 * dot(mttkrp_C, C) + sum(H)
+    return max(loss, zero(T))
 end
 
 """
@@ -356,28 +381,44 @@ end
         g::AbstractVector{T},
         p::AbstractVector{T},
         X::AbstractArray{U, 3},
-        cp_rank::Int
+        cp_rank::Int,
+        GtA, GtB, GtC, H_A, H_B, H_C
     ) where {T <: Real, U <: Real}
 
 Computes the gradient of the 3rd-order CP reconstruction loss with respect to a
-flattened parameter vector `p`, and writes the result in-place to `g`.
+flattened parameter vector `p`, writing the result in-place to `g`, using
+preallocated workspace buffers.
 
-This function interprets `p` as the flattened CP factors `A`, `B`, and `C`, and
-interprets `g` as storage for the corresponding factor gradients `gA`, `gB`, and
-`gC`. The gradient is evaluated from the analytic derivative of the squared
-Frobenius loss `||X - X̂||_F^2`, using MTTKRP terms and Gram matrices of the factor
-matrices. No new flattened gradient vector is allocated; instead, the provided
-buffer `g` is overwritten in-place.
+This function interprets `p` as the flattened CP factor matrices `A`, `B`, and
+`C`, and interprets `g` as storage for the corresponding factor gradients `gA`,
+`gB`, and `gC` via [`flat_to_cp_factors`](@ref). It evaluates the gradient of the
+squared Frobenius loss
+
+`||X - X̂||_F^2`
+
+from the standard CP gradient formula based on MTTKRP terms and Gram matrices of
+the factor matrices.
+
+To avoid unnecessary allocations, all intermediate Gram matrices and Hadamard
+products are written into caller-provided buffers. The output vector `g` is
+overwritten in-place and no new flattened gradient vector is allocated.
 
 This is useful in optimization workflows where CP factors are represented as a
-single parameter vector and gradients must be supplied in the same flattened format.
+single parameter vector and gradients must be returned in the same flattened form.
 
 # Arguments
 - `g`: Output gradient vector, overwritten in-place with the gradient of the loss
   with respect to `p`.
-- `p`: Flat parameter vector encoding the factor matrices in column-major order.
+- `p`: Flat parameter vector encoding the factor matrices `A`, `B`, and `C` in
+  column-major order.
 - `X`: Input 3rd-order tensor.
 - `cp_rank`: CP rank, i.e. the common number of columns of the factor matrices.
+- `GtA`: Preallocated buffer for the Gram matrix `A' * A`.
+- `GtB`: Preallocated buffer for the Gram matrix `B' * B`.
+- `GtC`: Preallocated buffer for the Gram matrix `C' * C`.
+- `H_A`: Preallocated buffer for the Hadamard product `GtB .* GtC`.
+- `H_B`: Preallocated buffer for the Hadamard product `GtA .* GtC`.
+- `H_C`: Preallocated buffer for the Hadamard product `GtA .* GtB`.
 
 # Returns
 - `nothing`.
@@ -386,28 +427,117 @@ function cp_loss_grad!(
     g::AbstractVector{T},
     p::AbstractVector{T},
     X::AbstractArray{U,3},
-    cp_rank::Int
+    cp_rank::Int,
+    GtA, GtB, GtC, H_A, H_B, H_C # Buffers
 ) where {T<: Real, U <: Real}
     A, B, C = flat_to_cp_factors(p, cp_rank, size(X))
     gA, gB, gC = flat_to_cp_factors(g, cp_rank, size(X))
 
-    GtA = A' * A
-    GtB = B' * B
-    GtC = C' * C
-
-    H_A = GtB .* GtC
-    H_B = GtA .* GtC
-    H_C = GtA .* GtB
+    mul!(GtA, A', A)
+    mul!(GtB, B', B)
+    mul!(GtC, C', C)
+    
+    @. H_A = GtB * GtC
+    @. H_B = GtA * GtC
+    @. H_C = GtA * GtB
 
     @tullio gA[i, r] = X[i, j, k] * B[j, r] * C[k, r]
     @tullio gB[j, r] = X[i, j, k] * A[i, r] * C[k, r]
     @tullio gC[k, r] = X[i, j, k] * A[i, r] * B[j, r]
 
-    gA .= -2 .* gA .+ 2 .* (A * H_A)
-    gB .= -2 .* gB .+ 2 .* (B * H_B)
-    gC .= -2 .* gC .+ 2 .* (C * H_C)
+    mul!(gA, A, H_A, 2, -2)
+    mul!(gB, B, H_B, 2, -2)
+    mul!(gC, C, H_C, 2, -2)
 
     return nothing
+end
+
+"""
+    cp_loss_fg!(
+        G,
+        p::AbstractVector{T},
+        X::AbstractArray{U, 3},
+        cp_rank::Int,
+        norm2_X::V,
+        GtA, GtB, GtC, H_A, H_B, H_C
+    ) where {T <: Real, U <: Real, V <: Real}
+
+Computes both the CP reconstruction loss and its gradient for a 3rd-order tensor
+`X` from a flattened parameter vector `p`, writing the gradient in-place to `G`
+using preallocated workspace buffers.
+
+This function interprets `p` as the concatenation of the three CP factor matrices
+`A`, `B`, and `C`, each with `cp_rank` columns, via
+[`flat_to_cp_factors`](@ref). It also interprets `G` as storage for the flattened
+factor gradients `gA`, `gB`, and `gC`.
+
+Internally, the function first forms the Gram matrices `A' * A`, `B' * B`, and
+`C' * C`, then constructs the Hadamard products needed for the CP gradient. It
+computes MTTKRP terms for each factor, uses them both to evaluate the squared
+Frobenius reconstruction loss
+
+`||X - X̂||_F^2`
+
+and to overwrite `G` with the corresponding gradient in flattened form.
+
+The squared Frobenius norm of `X` is supplied by the caller through `norm2_X`,
+and all matrix intermediates are written into caller-provided buffers to avoid
+unnecessary allocations.
+
+This function is useful in optimization routines that require the objective value
+and gradient to be evaluated together from a single flattened parameter vector.
+
+# Arguments
+- `G`: Output gradient vector, overwritten in-place with the gradient of the loss
+  with respect to `p`.
+- `p`: Flat parameter vector encoding the factor matrices `A`, `B`, and `C` in
+  column-major order.
+- `X`: Input 3rd-order tensor.
+- `cp_rank`: CP rank, i.e. the common number of columns of the factor matrices.
+- `norm2_X`: Precomputed squared Frobenius norm of `X`, i.e. `sum(abs2, X)`.
+- `GtA`: Preallocated buffer for the Gram matrix `A' * A`.
+- `GtB`: Preallocated buffer for the Gram matrix `B' * B`.
+- `GtC`: Preallocated buffer for the Gram matrix `C' * C`.
+- `H_A`: Preallocated buffer for the Hadamard product `GtB .* GtC`.
+- `H_B`: Preallocated buffer for the Hadamard product `GtA .* GtC`.
+- `H_C`: Preallocated buffer for the Hadamard product `GtA .* GtB`.
+
+# Returns
+- The squared Frobenius loss `||X - X̂||_F^2`.
+"""
+function cp_loss_fg!(
+    G,
+    p::AbstractVector{T},
+    X::AbstractArray{U, 3},
+    cp_rank::Int,
+    norm2_X::V,
+    GtA, GtB, GtC, H_A, H_B, H_C # Buffers
+) where {T <: Real, U <: Real, V <: Real}
+    A, B, C = flat_to_cp_factors(p, cp_rank, size(X))
+
+    mul!(GtA, A', A)
+    mul!(GtB, B', B)
+    mul!(GtC, C', C)
+    
+    @. H_A = GtB * GtC
+    @. H_B = GtA * GtC
+    @. H_C = GtA * GtB
+    
+    gA, gB, gC = flat_to_cp_factors(G, cp_rank, size(X))
+    
+    @tullio gA[i, r] = X[i, j, k] * B[j, r] * C[k, r]
+    @tullio gB[j, r] = X[i, j, k] * A[i, r] * C[k, r]
+    @tullio gC[k, r] = X[i, j, k] * A[i, r] * B[j, r]
+    
+    loss_val = zero(V)
+    loss_val = norm2_X - 2.0 * dot(gC, C) + dot(GtA, H_A)
+    loss_val = max(loss_val, zero(V))
+
+    mul!(gA, A, H_A, 2, -2)
+    mul!(gB, B, H_B, 2, -2)
+    mul!(gC, C, H_C, 2, -2)
+    
+    return loss_val
 end
 
 """
@@ -695,7 +825,7 @@ function cp_als(
 
     norm_tensor = norm(X)
     norm2_tensor = norm_tensor^2
-    last_loss = sqrt(cp_loss(factors, X)) / norm_tensor
+    last_loss = sqrt(cp_loss(factors, X, norm2_tensor)) / norm_tensor
 
     if show_trace
         println("Iteration 0: Time = 0.0 s, Loss = $last_loss")
@@ -928,10 +1058,13 @@ function cp_opt(
     end
 
     norm2_X = sum(abs2, X)
-    f(u) = cp_loss(u, X, cp_rank, norm2_X)
-    g!(g, u) = cp_loss_grad!(g, u, X, cp_rank)
+    GtA, GtB, GtC, H_A, H_B, H_C = (Matrix{T}(undef, cp_rank, cp_rank) for _ in 1:6) # Buffers
+
+    f(u) = cp_loss(u, X, cp_rank, norm2_X, GtA, GtB, GtC, H_A)
+    g!(g, u) = cp_loss_grad!(g, u, X, cp_rank, GtA, GtB, GtC, H_A, H_B, H_C)
+    fg!(G, u) = cp_loss_fg!(G, u, X, cp_rank, norm2_X, GtA, GtB, GtC, H_A, H_B, H_C)
     
-    od = OnceDifferentiable(f, g!, p0)
+    od = OnceDifferentiable(f, g!, fg!, p0)
     options = Optim.Options(iterations = max_iter, show_trace = show_trace, show_every = show_every)
     sol = optimize(od, p0, method, options)
     
