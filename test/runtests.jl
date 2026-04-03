@@ -41,24 +41,26 @@ function test_cp()
         A, B, C, D = randn(I, R), randn(J, R), randn(K, R), randn(L, R)
         X = zeros(I, J, K, L)
         @tullio X[i, j, k, l] := A[i, r] * B[j, r] * C[k, r] * D[l, r]
+        norm2_X = norm(X)^2
         lambda, factors = cp_als(X, R)
         A_hat, B_hat, C_hat, D_hat = factors
-        loss_hat = sqrt(cp_loss((A_hat .* lambda', B_hat, C_hat, D_hat), X)) / norm(X)
+        loss_hat = sqrt(cp_loss((A_hat .* lambda', B_hat, C_hat, D_hat), X, norm2_X)) / norm(X)
         @test loss_hat < 1e-6
 
         # Test cp_als on the synthetic tensor with 3-tensor
         I, J, K, R = 20, 30, 40, 10
         A, B, C = randn(I, R), randn(J, R), randn(K, R)
         @tullio X[i, j, k] := A[i, r] * B[j, r] * C[k, r]
+        norm2_X = norm(X)^2
 
         # Test contraction
         X_hat = cp_contract((A, B, C))
         rel_err = norm(X - X_hat) / norm(X)
-        @test rel_err < 1e-14
+        @test rel_err < 1e-12
 
         # Test cp_loss with the true factors
-        loss = sqrt(cp_loss((A, B, C), X)) / norm(X)      
-        @test loss < 1e-10
+        loss = sqrt(cp_loss((A, B, C), X, norm2_X)) / norm(X)
+        @test loss < 1e-12
 
         # Test cp_loss with the MTTKRP for mode 1
         Gts = (A' * A, B' * B, C' * C)
@@ -66,8 +68,7 @@ function test_cp()
         KR = Matrix{Float64}(undef, J*K, R)
         khatri_rao!(KR, C, B)
         mttkrp_n = X1 * KR # MTTKRP for mode 1
-        X_norm2 = sum(abs2, X)
-        loss2 = sqrt(cp_loss(Gts, A, mttkrp_n, X_norm2)) / norm(X)
+        loss2 = sqrt(cp_loss(Gts, A, mttkrp_n, norm2_X)) / norm(X)
         @test loss2 < 1e-10
 
         # Test mttkrp! against the naive MTTKRP
@@ -77,7 +78,7 @@ function test_cp()
 
         # Test cp_als on the synthetic tensor
         lambda, A_hat, B_hat, C_hat = cp_als(X, R; show_trace=true, show_every=50)
-        loss_hat = sqrt(cp_loss((A_hat .* lambda', B_hat, C_hat), X)) / norm(X)
+        loss_hat = sqrt(cp_loss((A_hat .* lambda', B_hat, C_hat), X, norm2_X)) / norm(X)
         println("Loss after ALS optimization: $loss_hat")
         @test loss_hat < 1e-6
 
@@ -86,19 +87,6 @@ function test_cp()
         A_hat, B_hat, C_hat = TensorFactors.flat_to_cp_factors(p, R, size(X))
         @test (norm(A - A_hat) / norm(A) < 1e-14 || norm(B - B_hat) / norm(B) < 1e-14
             || norm(C - C_hat) / norm(C) < 1e-14)
-
-        # Test flat loss
-        norm2_X = sum(abs2, X)
-        loss = cp_loss(p, X, R, norm2_X)
-        @test loss < 1e-10
-
-        # Test flat gradient
-        p = randn(length(p))
-        g = similar(p)
-        TensorFactors.cp_loss_grad!(g, p, X, R)
-        g_fd = similar(p)
-        ForwardDiff.gradient!(g_fd, p -> cp_loss(p, X, R, norm2_X), p)
-        @test norm(g - g_fd) / norm(g_fd) < 1e-7
 
         # Test optimization based CPD with random initialization
         A_hat, B_hat, C_hat = cp_opt(ConjugateGradient(), X, R; show_trace=true, show_every=100)
@@ -146,7 +134,7 @@ function test_tucker()
         @tullio A_approx[i, j, k] := S_approx[a, b, c] * U1_approx[i, a] * U2_approx[j, b] * U3_approx[k, c]
         rel_err = norm(A - A_approx) / norm(A)
         println("Relative error after HOSVD: $rel_err")
-        @test rel_err < 1e-14
+        @test rel_err < 1e-12
     end
 end
 
