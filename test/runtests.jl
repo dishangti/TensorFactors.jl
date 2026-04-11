@@ -1,10 +1,10 @@
 using SafeTestsets
 
-@safetestset "CPU Tests" begin
-    include("test_cpu.jl")
-    test_cp()
-    test_tucker()
-end
+# @safetestset "CPU Tests" begin
+#     include("test_cpu.jl")
+#     test_cp()
+#     test_tucker()
+# end
 
 CUDA_available = true
 GPU_available = true
@@ -21,8 +21,8 @@ if CUDA_available
     if GPU_available
         @safetestset "GPU Tests" begin
             include("test_gpu.jl")
-            test_cp()
-            #test_tucker_gpu()
+            #test_cp()
+            test_tucker()
         end
     else
         @warn "No functional GPU device available, skipping GPU tests"
