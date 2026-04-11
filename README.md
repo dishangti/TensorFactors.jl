@@ -61,7 +61,8 @@ println("Factor C: ", size(C))
 **CUDA Support Example:** You can initial tensors as `CuArray` to enable CUDA computation.
 ```julia
 using LinearAlgebra
-using Tullio, KernelAbstractions
+using Tullio
+using CUDA, KernelAbstractions
 # Use KernelAbstractions to compile Tullio into CUDA kernels
 
 # 1. Create a synthetic 3rd-order tensor (e.g., 20 x 30 x 50 with CPD rank 10)

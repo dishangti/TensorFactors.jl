@@ -19,15 +19,15 @@ function TensorFactors.cp_als(
     A = CUDA.randn(T, I, cp_rank)
     B = CUDA.randn(T, J, cp_rank)
     C = CUDA.randn(T, K, cp_rank)
-    mttkrp_C = CuArray{Float64}(undef, K, cp_rank)
-    V = CuArray{Float64}(undef, cp_rank, cp_rank)    # For Hardamard product of Gram matrices
+    mttkrp_C = CuArray{T}(undef, K, cp_rank)
+    V = CuArray{T}(undef, cp_rank, cp_rank)    # For Hardamard product of Gram matrices
 
-    GtA = CuArray{Float64}(undef, cp_rank, cp_rank)
-    GtB = CuArray{Float64}(undef, cp_rank, cp_rank)
-    GtC = CuArray{Float64}(undef, cp_rank, cp_rank)
+    GtA = CuArray{T}(undef, cp_rank, cp_rank)
+    GtB = CuArray{T}(undef, cp_rank, cp_rank)
+    GtC = CuArray{T}(undef, cp_rank, cp_rank)
 
-    C_loss = CuArray{Float64}(undef, K, cp_rank)  # Buffer for MTTKRP of C to evaluate loss
-    GtC_loss = CuArray{Float64}(undef, cp_rank, cp_rank)  # Buffer for GtC to evaluate loss
+    C_loss = CuArray{T}(undef, K, cp_rank)  # Buffer for MTTKRP of C to evaluate loss
+    GtC_loss = CuArray{T}(undef, cp_rank, cp_rank)  # Buffer for GtC to evaluate loss
 
     lambda = CUDA.ones(T, cp_rank)   # Normalization of factors to prevent numerical issues
 

@@ -4,4 +4,4 @@ codecov:
 comment: false
 
 ignore:
-  - "ext/**/*"
+  - "ext/**"
