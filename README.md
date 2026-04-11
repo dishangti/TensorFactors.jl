@@ -1,6 +1,8 @@
 # TensorFactors.jl
 An alternative tensor factorization toolbox designed for high performance.
 
+This toolbox supports both CPU and CUDA as computational resources.
+
 [![Stable](https://img.shields.io/badge/docs-stable-blue.svg)](https://dishangti.github.io/TensorFactors.jl/stable/)
 [![Dev](https://img.shields.io/badge/docs-dev-blue.svg)](https://dishangti.github.io/TensorFactors.jl/dev/)
 [![Build Status](https://github.com/dishangti/TensorFactors.jl/actions/workflows/CI.yml/badge.svg?branch=main)](https://github.com/dishangti/TensorFactors.jl/actions/workflows/CI.yml?query=branch%3Amain)
@@ -56,6 +58,34 @@ println("Factor C: ", size(C))
 ```
 *Note: Weights can be obsorbed in to one of the factor as `A .* λ'`. For tensors of order $N > 3$, `cp_als` returns `(λ, factors)` where `factors` is an N-tuple of factor matrices.*
 
+**CUDA Support Example:** You can initial tensors as `CuArray` to enable CUDA computation.
+```julia
+using LinearAlgebra
+using Tullio, KernelAbstractions
+# Use KernelAbstractions to compile Tullio into CUDA kernels
+
+# 1. Create a synthetic 3rd-order tensor (e.g., 20 x 30 x 50 with CPD rank 10)
+I, J, K, cp_rank = 20, 30, 50, 10
+A, B, C = CUDA.randn(I, R), CUDA.randn(J, R), CUDA.randn(K, R)
+@tullio X[i, j, k] := A[i, r] * B[j, r] * C[k, r]
+
+# 3. Run the CP-ALS algorithm
+# The function monitors the relative reconstruction loss and stops 
+# when the change falls below `dloss_rtol` (default 1e-8).
+λ, A, B, C = cp_als(
+    X, 
+    cp_rank; 
+    max_iter=500, 
+    show_trace=true, 
+    show_every=10
+)
+
+println("Decomposition complete!")
+println("Weights (λ): ", size(λ))
+println("Factor A: ", size(A))
+println("Factor B: ", size(B))
+println("Factor C: ", size(C))
+```
 
 #### 2. Gradient-Based Optimization (`cp_opt`)
 

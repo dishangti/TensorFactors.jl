@@ -107,3 +107,41 @@ function test_cp()
         @test loss_hat < 1e-6
     end
 end
+
+function test_tucker()
+    @testset "tucker.jl" begin
+        Random.seed!(42)
+        CUDA.seed!(42)
+
+        # Tensor times matrix (TTM) test
+        A = CuArray(randn(4, 5, 6))
+        M = CuArray(randn(3, 4))
+        mode = 1
+        res = ttm(A, M, mode)
+
+        res_naive = CUDA.zeros(3, 5, 6)
+        @tullio res_naive[i, j, k] := M[i, m] * A[m, j, k]
+        rel_err = norm(res - res_naive) / norm(res_naive)
+        @test rel_err < 1e-14
+
+        # Contraction test
+        I, J, K = 20, 30, 40
+        S_I, S_J, S_K = 10, 20, 30
+        U1, U2, U3 = CuArray(randn(I, S_I)), CuArray(randn(J, S_J)), CuArray(randn(K, S_K))
+        S = CuArray(randn(S_I, S_J, S_K))
+        A = similar(S)
+        @tullio A[i, j, k] := S[a, b, c] * U1[i, a] * U2[j, b] * U3[k, c]
+        A_hat = tucker_contract(S, (U1, U2, U3))
+        rel_err = norm(A - A_hat) / norm(A)
+        @test rel_err < 1e-14
+
+        # HOSVD test
+        S_approx, U = tucker_hosvd(A, size(S))
+        U1_approx, U2_approx, U3_approx = U
+        A_approx = similar(A)
+        @tullio A_approx[i, j, k] := S_approx[a, b, c] * U1_approx[i, a] * U2_approx[j, b] * U3_approx[k, c]
+        rel_err = norm(A - A_approx) / norm(A)
+        println("Relative error after HOSVD: $rel_err")
+        @test rel_err < 1e-12
+    end
+end

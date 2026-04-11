@@ -105,6 +105,8 @@ end
 
 function test_tucker()
     @testset "tucker.jl" begin
+        Random.seed!(42)
+
         # Tensor times matrix (TTM) test
         A = randn(4, 5, 6)
         M = randn(3, 4)

@@ -1,0 +1,7 @@
+codecov:
+  require_ci_to_pass: true
+
+comment: false
+
+ignore:
+  - "ext/**/*"
