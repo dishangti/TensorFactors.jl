@@ -30,8 +30,8 @@ function unfold_mode(
 ) where {T, N}
     sz = size(A)
     p = [mode; setdiff(1:N, mode)]  # Permutation to bring the target mode to the front
-    A_perm = PermutedDimsArray(A, p)
-    return Array(reshape(A_perm, sz[mode], :))
+    A_perm = permutedims(A, p)
+    return reshape(A_perm, sz[mode], :)
 end
 
 """
@@ -109,7 +109,7 @@ function tucker_hosvd(
     sz = size(A)
     sz_set = sort(unique(sz))
     sz_idx = indexin(sz, sz_set)
-    gram_buffers = [Matrix{T}(undef, sz_set[i], sz_set[i]) for i in eachindex(sz_set)]
+    gram_buffers = [similar(A, sz_set[i], sz_set[i]) for i in eachindex(sz_set)]
     factors = ntuple(N) do n
         gram_buffer = gram_buffers[sz_idx[n]]
         An = unfold_mode(A, n)

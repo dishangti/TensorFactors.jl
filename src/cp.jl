@@ -80,7 +80,7 @@ generic vector-based numerical routines.
     @assert all(size(f, 2) == cp_rank for f in cp_factors) "All factor matrices must have the same number of columns."
 
     total_len = sum(length, cp_factors)
-    p = Vector{T}(undef, total_len)
+    p = similar(cp_factors[1], total_len)
 
     idx = 1
     @inbounds for factor in cp_factors
@@ -170,8 +170,8 @@ end
         Gts::NTuple{N, <:AbstractMatrix{T}},
         A_n::AbstractMatrix{T},
         mttkrp_n::AbstractMatrix{T},
-        X_norm2::T,
-    ) where {N, T <: Number}
+        X_norm2::U,
+    ) where {N, T <: Number, U <: Real}
 
 Computes the squared CP reconstruction loss from precomputed Gram matrices and an
 MTTKRP term for one mode.
@@ -214,43 +214,6 @@ provides a fast way to monitor convergence with minimal additional cost.
     return max(loss, zero(T))
 end
 
-"""
-    cp_loss(
-        factors::NTuple{3, <:AbstractMatrix{T}},
-        X::AbstractArray{U, 3},
-        X_norm2::V,
-    ) where {T <: Number, U <: Number, V <: Real}
-
-Computes the CP decomposition loss for a 3rd-order tensor `X` from a tuple of
-factor matrices `(A, B, C)` using a Gram-based formula that avoids explicitly
-forming the reconstructed tensor.
-
-Given factor matrices `A`, `B`, and `C`, this method evaluates the squared
-Frobenius loss
-
-`||X - X̂||_F^2 = ||X||_F^2 - 2⟨X, X̂⟩ + ||X̂||_F^2`
-
-where `X̂` is the CP reconstruction defined by the factors. The mixed term
-`⟨X, X̂⟩` is computed through an MTTKRP-like contraction with respect to `C`,
-and the reconstruction norm `||X̂||_F^2` is computed from the Hadamard product
-of the factor Gram matrices
-
-`(A' * A) .* (B' * B) .* (C' * C)`.
-
-This formulation is typically more memory-efficient than explicitly constructing
-`X̂`, and is often preferable when `||X||_F^2` is already available.
-
-# Arguments
-- `factors`: Tuple `(A, B, C)` of factor matrices, where
-  - `A` has size `(size(X, 1), R)`,
-  - `B` has size `(size(X, 2), R)`,
-  - `C` has size `(size(X, 3), R)`.
-- `X`: Input 3rd-order tensor.
-- `X_norm2`: Precomputed squared Frobenius norm `||X||_F^2`.
-
-# Returns
-- The squared Frobenius loss `||X - X̂||_F^2`.
-"""
 @inline function cp_loss(
     factors::NTuple{3, <:AbstractMatrix{T}},
     X::AbstractArray{U, 3},
@@ -265,47 +228,13 @@ This formulation is typically more memory-efficient than explicitly constructing
     return max(loss, zero(T))
 end
 
-"""
-    cp_loss(
-        Gt_A::AbstractMatrix{T},
-        Gt_B::AbstractMatrix{T},
-        Gt_C::AbstractMatrix{T},
-        C::AbstractMatrix{T},
-        mttkrp_C::AbstractMatrix{T},
-        X_norm2::T,
-    ) where {T <: Number}
-
-Computes the squared CP reconstruction loss for a 3rd-order tensor from precomputed
-Gram matrices and the MTTKRP term of the third mode.
-
-This method is a specialized 3-way variant of the Gram/MTTKRP-based loss evaluation
-used inside CP-ALS. It avoids explicit tensor reconstruction by using the identity
-
-`||X - X̂||_F^2 = ||X||_F^2 - 2⟨C, MTTKRP_C⟩ + ||X̂||_F^2`
-
-where the reconstruction norm `||X̂||_F^2` is computed as
-`sum(Gt_A .* Gt_B .* Gt_C)`. This makes the loss evaluation inexpensive during ALS
-iterations.
-
-# Arguments
-- `Gt_A`: Gram matrix `A' * A`.
-- `Gt_B`: Gram matrix `B' * B`.
-- `Gt_C`: Gram matrix `C' * C`.
-- `C`: Third-mode factor matrix.
-- `mttkrp_C`: MTTKRP term corresponding to the third mode.
-- `X_norm2`: Squared Frobenius norm of the input tensor, i.e. `sum(abs2, X)`.
-
-# Returns
-- The squared Frobenius loss `||X - X̂||_F^2`.
-"""
 @inline function cp_loss(
-    Gt_A::AbstractMatrix{T},
-    Gt_B::AbstractMatrix{T},
-    Gt_C::AbstractMatrix{T},
+    Gts::NTuple{3, <:AbstractMatrix{T}},
     C::AbstractMatrix{T},
     mttkrp_C::AbstractMatrix{T},
-    X_norm2::T
-) where {T <: Number}
+    X_norm2::U
+) where {T <: Number, U <: Real}
+    Gt_A, Gt_B, Gt_C = Gts
     loss = X_norm2 - 2 * dot(mttkrp_C, C) + sum(Gt_A .* Gt_B .* Gt_C)
     return max(loss, zero(T))
 end
@@ -711,15 +640,9 @@ function colnormalize!(
     A::AbstractMatrix{T},
     lambda::AbstractVector{T},
 ) where {T<:Number}
-    R = size(A, 2)
-    @assert length(lambda) == R
-
-    @inbounds for r in 1:R
-        col = view(A, :, r)
-        nrm = norm(col)
-        rmul!(col, inv(nrm))
-        lambda[r] = nrm
-    end
+    norms = sqrt.(sum(abs2, A, dims=1)) 
+    A ./= norms 
+    lambda .= vec(norms) 
 
     return A, lambda
 end
@@ -883,23 +806,28 @@ end
         X::AbstractArray{T, 3},
         cp_rank::Int;
         max_iter::Int=10000,
-        dloss_rtol::Float64=1e-7,
+        dloss_rtol::Float64=1e-8,
         loss_rtol::Float64=1e-8,
         show_trace::Bool=false,
         show_every::Int=100,
     ) where {T <: Real}
 
 Computes a rank-`cp_rank` CANDECOMP/PARAFAC (CP) decomposition of a 3rd-order
-tensor `tensor` using alternating least squares (ALS).
+tensor `X` using alternating least squares (ALS).
 
-This method is a specialized implementation for 3-way tensors. It iteratively updates
-the factor matrices `A`, `B`, and `C` by solving the normal equations for each mode
-while holding the other two factors fixed. The MTTKRP terms are formed directly using
-tensor contractions, and the Gram matrices of the factors are reused across iterations
-to avoid redundant computation. The relative reconstruction loss is monitored during
-optimization, and the iteration terminates when either the loss becomes sufficiently
-small or the change in loss between successive iterations falls below the specified
-tolerance.
+This is a specialized implementation for 3-way tensors. It iteratively updates
+the factor matrices `A`, `B`, and `C` while holding the others fixed. Each update
+is formed from the corresponding MTTKRP contraction and solved using the Hadamard
+product of the Gram matrices of the other two factors. Factor columns are
+normalized during the iteration, and the accumulated scaling is stored in
+`lambda` to improve numerical stability.
+
+The optimization monitors the relative reconstruction error
+
+`||X - X̂||_F / ||X||_F`
+
+and terminates when either the error itself becomes sufficiently small or the
+change in error between successive iterations falls below the specified tolerance.
 
 # Arguments
 - `X`: Input 3rd-order tensor of size `(I, J, K)`.
@@ -907,18 +835,23 @@ tolerance.
 
 # Keyword Arguments
 - `max_iter`: Maximum number of ALS iterations.
-- `dloss_rtol`: Relative tolerance on the change in loss between successive iterations.
-  Iteration stops when `abs(last_loss - loss) < dloss_rtol`.
-- `loss_rtol`: Relative tolerance on the loss itself. Iteration stops when
-  `loss < loss_rtol`.
-- `show_trace`: If `true`, prints iteration progress and current loss.
+- `dloss_rtol`: Absolute tolerance on the change in relative reconstruction error
+  between successive iterations. Iteration stops when
+  `abs(last_loss - loss) < dloss_rtol`.
+- `loss_rtol`: Tolerance on the relative reconstruction error itself. Iteration
+  stops when `loss < loss_rtol`.
+- `show_trace`: If `true`, prints iteration progress and current relative error.
 - `show_every`: Frequency, in iterations, at which progress information is printed
   when `show_trace=true`.
 
 # Returns
+- `lambda`: Length-`cp_rank` vector containing the absorbed column scalings.
 - `A`: Factor matrix of size `(size(X, 1), cp_rank)`.
 - `B`: Factor matrix of size `(size(X, 2), cp_rank)`.
 - `C`: Factor matrix of size `(size(X, 3), cp_rank)`.
+
+The reconstructed tensor is represented implicitly as the CP model with weights
+`lambda` and factors `A`, `B`, and `C`.
 """
 function cp_als(
     X::AbstractArray{T,3},
@@ -983,7 +916,7 @@ function cp_als(
         # Evaluate loss
         @. C_loss = C * lambda'
         mul!(GtC_loss, C_loss', C_loss)
-        loss = sqrt(cp_loss(GtA, GtB, GtC_loss, C_loss, mttkrp_C, norm2_tensor)) / norm_tensor
+        loss = sqrt(cp_loss((GtA, GtB, GtC_loss), C_loss, mttkrp_C, norm2_tensor)) / norm_tensor
 
         if show_trace && iter % show_every == 0
             println("Iteration $iter: Time = $(time() - start_time) s, Loss = $loss")
